@@ -39,8 +39,15 @@ def _json_ready(value):
     return value
 
 
+def _json_default(value):
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
+
+
 def _as_json(data: dict) -> str:
-    return json.dumps(_json_ready(data), indent=2)
+    prepared = _json_ready(data)
+    return json.dumps(prepared, indent=2, default=_json_default)
 
 
 st.set_page_config(page_title="HL7 → FHIR Demo", page_icon="🩺", layout="wide")
