@@ -7,6 +7,7 @@ Run with:
 
 from __future__ import annotations
 
+from datetime import date, datetime
 import json
 from pathlib import Path
 
@@ -26,8 +27,20 @@ def _list_samples() -> list[str]:
     return sorted(p.name for p in SAMPLES_DIR.glob("*.hl7"))
 
 
+def _json_ready(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, list):
+        return [_json_ready(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _json_ready(v) for k, v in value.items()}
+    return value
+
+
 def _as_json(data: dict) -> str:
-    return json.dumps(data, indent=2)
+    return json.dumps(_json_ready(data), indent=2)
 
 
 st.set_page_config(page_title="HL7 → FHIR Demo", page_icon="🩺", layout="wide")
@@ -75,7 +88,7 @@ hl7_content = st.text_area(
 col_convert, col_reset = st.columns([1, 1], gap="small")
 convert_clicked = col_convert.button("Convert to FHIR", type="primary")
 if col_reset.button("Reset editor"):
-    st.experimental_rerun()
+    st.rerun()
 
 if convert_clicked:
     if not hl7_content.strip():
