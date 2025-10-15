@@ -21,7 +21,7 @@ import json
 import sys
 from collections.abc import Iterable
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fhir.resources.address import Address
 
@@ -401,7 +401,7 @@ def _post_process_bundle_dict(data: dict) -> dict:
 
 
 def _json_ready(value):
-    if isinstance(value, datetime):
+    if isinstance(value, (datetime, date)):
         return value.isoformat()
     if isinstance(value, list):
         return [_json_ready(v) for v in value]

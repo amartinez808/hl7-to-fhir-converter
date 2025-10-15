@@ -43,6 +43,18 @@ streamlit run streamlit_app.py
 ```
 *Use the sidebar to pick one of the included samples or upload your own HL7 message, then click **Convert to FHIR** to explore the resulting bundle interactively. You can download the bundle as FHIR JSON for further testing.*
 
+### 7. Run via Docker (optional)
+Build and start the Streamlit demo in a container:
+```bash
+docker build -t hl7-fhir-demo .
+docker run --rm -p 8501:8501 hl7-fhir-demo
+```
+Or with Docker Compose:
+```bash
+docker compose up --build
+```
+Then browse to http://localhost:8501.
+
 ## Supported message types
 - `ADT^A01` / `ADT^A03` → `Patient`, `Encounter`
 - `ORU^R01` → `Observation` (with interpretation/status) + `DiagnosticReport`

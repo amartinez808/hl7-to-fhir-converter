@@ -1,0 +1,10 @@
+version: "3.9"
+
+services:
+  streamlit:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    restart: unless-stopped
