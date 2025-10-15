@@ -2,6 +2,8 @@
 
 A lightweight Python toolkit for turning HL7 v2 messages into deterministic FHIR R4 bundles.
 
+> **Note:** Test data only — no real PHI should be processed with this demo.
+
 ## Quickstart
 
 ### 1. Activate the virtual environment
@@ -46,14 +48,22 @@ streamlit run streamlit_app.py
 ### 7. Run via Docker (optional)
 Build and start the Streamlit demo in a container:
 ```bash
-docker build -t hl7-fhir-demo .
-docker run --rm -p 8501:8501 hl7-fhir-demo
+docker build -t hl7-to-fhir:dev .
+docker run --rm -p 8501:8501 hl7-to-fhir:dev
 ```
-Or with Docker Compose:
+Or with Docker Compose (includes a simple healthcheck):
 ```bash
 docker compose up --build
 ```
 Then browse to http://localhost:8501.
+
+## What's included
+- Robust HL7 v2 → FHIR R4 mappings for ADT/ORU/RDE messages (Patient, Encounter, Observation, DiagnosticReport, MedicationRequest).
+- YAML-backed terminology normalization (local codes → SNOMED CT / LOINC).
+- Data quality tooling: completeness scoring, anomaly detection, probabilistic record linkage.
+- Privacy & audit helpers: patient de-identification toggle, AuditEvent NDJSON log.
+- Workflow orchestration agent with a sample referral-intake workflow and minimal FHIR client.
+- Streamlit UI with summary chips, quality tab, JSON/NDJSON download, optional POST to a FHIR server.
 
 ## Supported message types
 - `ADT^A01` / `ADT^A03` → `Patient`, `Encounter`
@@ -68,4 +78,12 @@ mkdir -p output
 for f in samples/*.hl7; do
   python hl7_to_fhir_miniconverter.py "$f" > "output/$(basename "$f" .hl7).json"
 done
+```
+
+## Post converted resources
+After converting, you can send a resource bundle to a FHIR server (replace `$FHIR_BASE` with your endpoint):
+```bash
+curl -X POST "$FHIR_BASE/Patient" \
+  -H "Content-Type: application/fhir+json" \
+  -d @bundle.json
 ```
