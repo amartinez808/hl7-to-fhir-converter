@@ -153,6 +153,22 @@ def _button(container, label: str, **kwargs) -> bool:
 
 st.set_page_config(page_title="HL7 → FHIR R4 Converter", page_icon="🧬", layout="wide")
 
+# Inject modern font styling (fallback keeps Streamlit defaults if loading fails)
+st.markdown(
+    """
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&display=swap');
+    :root, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] * {
+        font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    [data-testid="stMetricLabel"], [data-testid="stHeader"] h1 {
+        font-weight: 600;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # --- Sidebar inputs ---
 with st.sidebar:
     st.subheader("Message Input")
