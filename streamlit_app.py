@@ -50,6 +50,13 @@ def _as_json(data: dict) -> str:
     return json.dumps(prepared, indent=2, default=_json_default)
 
 
+def _rerun_app():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+
+
 st.set_page_config(page_title="HL7 → FHIR Demo", page_icon="🩺", layout="wide")
 
 st.title("HL7 v2 → FHIR R4 Converter Demo")
@@ -95,7 +102,7 @@ hl7_content = st.text_area(
 col_convert, col_reset = st.columns([1, 1], gap="small")
 convert_clicked = col_convert.button("Convert to FHIR")
 if col_reset.button("Reset editor"):
-    st.rerun()
+    _rerun_app()
 
 if convert_clicked:
     if not hl7_content.strip():
