@@ -12,7 +12,6 @@ import logging
 import os
 import sys
 import time
-from copy import deepcopy
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -20,6 +19,13 @@ from pathlib import Path
 from typing import Any
 
 import streamlit as st
+
+from app.adapters.fhir_client import FHIRClient
+from app.orchestration.workflows.referral_intake import build_referral_intake_workflow
+from app.quality.anomaly import detect_anomalies
+from app.quality.completeness import completeness_score
+from app.security.audit import audit_event
+from app.security.deidentify import mask_patient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -66,20 +72,6 @@ if _CONVERT_FN is None:
 if _CONVERT_FN is None:
     raise RuntimeError("No known converter function found in hl7_to_fhir_miniconverter")
 
-try:
-    completeness_score = getattr(_converter_module, "completeness_score")
-except AttributeError:
-    def completeness_score(resource_type: str, resource: dict) -> float:
-        keys = list(resource.keys())
-        required = {
-            "Patient": ["identifier", "name", "gender", "birthDate"],
-            "Encounter": ["status", "class", "subject", "period"],
-        }.get(resource_type, keys[:5])
-        if not required:
-            return 1.0
-        present = sum(1 for key in required if key in resource and resource[key] not in (None, [], ""))
-        return round(present / len(required), 3)
-
 
 def _normalize_result(obj: Any) -> Any:
     if hasattr(obj, "dict"):
@@ -124,16 +116,6 @@ def _pairs_from_result(obj: Any) -> list[tuple[str, dict]]:
 
 def _ndjson(pairs: list[tuple[str, dict]]) -> str:
     return "\n".join(json.dumps(resource, default=_json_ready, ensure_ascii=False) for _, resource in pairs)
-
-
-def _mask_patient(resource: dict) -> dict:
-    if resource.get("resourceType") == "Patient":
-        for name in resource.get("name", []):
-            name["family"] = "REDACTED"
-            name["given"] = ["REDACTED"]
-        for identifier in resource.get("identifier", []):
-            identifier["value"] = "****"
-    return resource
 
 
 def _rerun_app():
@@ -322,11 +304,27 @@ if convert:
                     if not resources_only:
                         st.info("No FHIR resources available.")
                     else:
-                        rows = [
-                            {"type": resource_type, "completeness": completeness_score(resource_type, resource)}
-                            for resource_type, resource in pairs
-                        ]
+                        rows = []
+                        anomalies_present: dict[str, list[str]] = {}
+                        for resource_type, resource in pairs:
+                            anomalies = detect_anomalies(resource_type, resource)
+                            if anomalies:
+                                key = resource.get("id") or resource_type
+                                anomalies_present[key] = anomalies
+                            rows.append(
+                                {
+                                    "resourceType": resource_type,
+                                    "id": resource.get("id", ""),
+                                    "completeness": completeness_score(resource_type, resource),
+                                    "anomalies": "; ".join(anomalies),
+                                }
+                            )
                         _dataframe(rows, use_container_width=True)
+                        if anomalies_present:
+                            for key, messages in anomalies_present.items():
+                                with st.expander(f"Anomalies for {key}", expanded=False):
+                                    for message in messages:
+                                        st.write(f"- {message}")
 
                 st.divider()
                 toggle_callable = getattr(st, "toggle", None)
@@ -335,7 +333,7 @@ if convert:
                 else:
                     redact = st.checkbox("De-identify PHI (mask names/IDs)", value=False)
                 safe_pairs = [
-                    (resource_type, _mask_patient(deepcopy(resource)) if redact else resource)
+                    (resource_type, mask_patient(resource) if redact else resource)
                     for resource_type, resource in pairs
                 ]
 
@@ -349,34 +347,41 @@ if convert:
                     if not safe_pairs:
                         st.info("No resources to send.")
                     else:
-                        try:
-                            import httpx
-                        except ImportError:
-                            st.error("httpx is required to POST resources. Please install it in this environment.")
-                        else:
-                            headers = {"Content-Type": "application/fhir+json"}
-                            if token:
-                                headers["Authorization"] = f"Bearer {token}"
-                            posted: list[dict[str, Any]] = []
-                            errors: list[str] = []
+                        client = FHIRClient(base, token or None)
+                        posted: list[dict[str, Any]] = []
+                        errors: list[str] = []
+                        for resource_type, resource in safe_pairs:
                             try:
-                                with httpx.Client(timeout=15.0) as client:
-                                    for resource_type, resource in safe_pairs:
-                                        url = f"{base.rstrip('/')}/{resource_type}"
-                                        try:
-                                            response = client.post(url, headers=headers, json=resource)
-                                            posted.append({"resourceType": resource_type, "status": response.status_code})
-                                        except httpx.HTTPError as http_err:
-                                            message = f"{resource_type}: {http_err}"
-                                            errors.append(message)
-                                            posted.append({"resourceType": resource_type, "status": "error"})
+                                response = client.create(resource_type, resource)
+                                entry: dict[str, Any] = {"resourceType": resource_type, "status": response.status_code}
+                                try:
+                                    payload = response.json()
+                                except ValueError:
+                                    payload = {}
+                                resource_id = payload.get("id")
+                                if resource_id:
+                                    entry["id"] = resource_id
+                                audit_event("create", resource_type, resource_id, "streamlit-ui")
+                                posted.append(entry)
                             except Exception as exc:  # noqa: BLE001
-                                logger.exception("Failed to POST resources to FHIR", exc_info=exc)
-                                st.error(f"Failed to POST to FHIR: {exc}")
-                            else:
-                                if errors:
-                                    for msg in errors:
-                                        st.warning(msg)
-                                st.success("POST complete")
-                                if posted:
-                                    st.table(posted)
+                                message = f"{resource_type}: {exc}"
+                                errors.append(message)
+                                posted.append({"resourceType": resource_type, "status": "error"})
+                        if errors:
+                            for msg in errors:
+                                st.warning(msg)
+                        st.success("POST complete" if not errors else "POST attempted with warnings")
+                        if posted:
+                            st.table(posted)
+
+                st.divider()
+                st.subheader("Referral Intake Workflow")
+                if st.button("Simulate referral intake workflow"):
+                    patient_resource = next((res for rtype, res in pairs if rtype == "Patient"), None)
+                    if not patient_resource:
+                        st.info("A Patient resource is required to simulate this workflow.")
+                    else:
+                        workflow = build_referral_intake_workflow(None, patient_resource, {"status": "planned"})
+                        context = workflow.run({})
+                        audit_event("workflow", "Patient", patient_resource.get("id"), "streamlit-ui")
+                        st.json(context)
