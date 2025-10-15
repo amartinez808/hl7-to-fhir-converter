@@ -7,47 +7,133 @@ Run with:
 
 from __future__ import annotations
 
-from datetime import date, datetime
 import json
+import logging
+import os
+import sys
+import time
+from copy import deepcopy
+from datetime import date, datetime
+from decimal import Decimal
+from enum import Enum
 from pathlib import Path
+from typing import Any
 
 import streamlit as st
 
-from hl7_to_fhir_miniconverter import convert_hl7_to_fhir_bundle
+logging.basicConfig(
+    level=logging.INFO,
+    handlers=[logging.StreamHandler(sys.stdout)],
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
 
-SAMPLES_DIR = Path("samples")
+try:
+    import hl7_to_fhir_miniconverter as _converter_module
+except Exception as converter_exc:  # noqa: BLE001
+    raise RuntimeError("Unable to import hl7_to_fhir_miniconverter module") from converter_exc
+
+try:
+    _json_ready = getattr(_converter_module, "_json_ready")
+except AttributeError:
+    def _json_ready(obj: Any):  # type: ignore[override]
+        if hasattr(obj, "dict"):
+            return obj.dict()
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        if isinstance(obj, Decimal):
+            return float(obj)
+        if isinstance(obj, Enum):
+            return obj.value
+        if isinstance(obj, (bytes, bytearray)):
+            return obj.decode("utf-8", errors="ignore")
+        if isinstance(obj, list):
+            return [_json_ready(item) for item in obj]
+        if isinstance(obj, dict):
+            return {k: _json_ready(v) for k, v in obj.items()}
+        return str(obj)
+
+_CONVERT_FN = None
+for name in ("convert_hl7_to_fhir", "convert_hl7_to_fhir_bundle", "convert_to_fhir_bundle"):
+    candidate = getattr(_converter_module, name, None)
+    if callable(candidate):
+        _CONVERT_FN = candidate
+        break
+if _CONVERT_FN is None:
+    fallback_candidate = getattr(_converter_module, "convert", None)
+    if callable(fallback_candidate):
+        _CONVERT_FN = fallback_candidate
+if _CONVERT_FN is None:
+    raise RuntimeError("No known converter function found in hl7_to_fhir_miniconverter")
+
+try:
+    completeness_score = getattr(_converter_module, "completeness_score")
+except AttributeError:
+    def completeness_score(resource_type: str, resource: dict) -> float:
+        keys = list(resource.keys())
+        required = {
+            "Patient": ["identifier", "name", "gender", "birthDate"],
+            "Encounter": ["status", "class", "subject", "period"],
+        }.get(resource_type, keys[:5])
+        if not required:
+            return 1.0
+        present = sum(1 for key in required if key in resource and resource[key] not in (None, [], ""))
+        return round(present / len(required), 3)
 
 
-def _load_sample(name: str) -> str:
-    path = SAMPLES_DIR / name
-    return path.read_text(encoding="utf-8")
+def _normalize_result(obj: Any) -> Any:
+    if hasattr(obj, "dict"):
+        try:
+            return obj.dict(exclude_none=True)
+        except TypeError:
+            return obj.dict()
+    if hasattr(obj, "model_dump"):
+        try:
+            return obj.model_dump(exclude_none=True)
+        except TypeError:
+            return obj.model_dump()
+    if isinstance(obj, (bytes, bytearray)):
+        obj = obj.decode("utf-8", errors="ignore")
+    if isinstance(obj, str):
+        try:
+            return json.loads(obj)
+        except json.JSONDecodeError:
+            return obj
+    return obj
 
 
-def _list_samples() -> list[str]:
-    return sorted(p.name for p in SAMPLES_DIR.glob("*.hl7"))
+def _pairs_from_result(obj: Any) -> list[tuple[str, dict]]:
+    data = _normalize_result(obj)
+    if isinstance(data, dict):
+        if "entry" in data:
+            pairs: list[tuple[str, dict]] = []
+            for entry in data.get("entry", []):
+                resource = entry.get("resource")
+                if isinstance(resource, dict):
+                    pairs.append((resource.get("resourceType", "Unknown"), resource))
+            return pairs
+        if "resourceType" in data:
+            return [(data.get("resourceType", "Unknown"), data)]
+    if isinstance(data, list):
+        if data and isinstance(data[0], tuple):
+            return [(rtype, res) for rtype, res in data if isinstance(res, dict)]
+        if data and isinstance(data[0], dict):
+            return [(item.get("resourceType", "Unknown"), item) for item in data]
+    return []
 
 
-def _json_ready(value):
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
-    if isinstance(value, list):
-        return [_json_ready(v) for v in value]
-    if isinstance(value, dict):
-        return {k: _json_ready(v) for k, v in value.items()}
-    return value
+def _ndjson(pairs: list[tuple[str, dict]]) -> str:
+    return "\n".join(json.dumps(resource, default=_json_ready, ensure_ascii=False) for _, resource in pairs)
 
 
-def _json_default(value):
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    return str(value)
-
-
-def _as_json(data: dict) -> str:
-    prepared = _json_ready(data)
-    return json.dumps(prepared, indent=2, default=_json_default)
+def _mask_patient(resource: dict) -> dict:
+    if resource.get("resourceType") == "Patient":
+        for name in resource.get("name", []):
+            name["family"] = "REDACTED"
+            name["given"] = ["REDACTED"]
+        for identifier in resource.get("identifier", []):
+            identifier["value"] = "****"
+    return resource
 
 
 def _rerun_app():
@@ -57,96 +143,216 @@ def _rerun_app():
         st.experimental_rerun()
 
 
-st.set_page_config(page_title="HL7 → FHIR Demo", page_icon="🩺", layout="wide")
+def _button(container, label: str, **kwargs) -> bool:
+    try:
+        return container.button(label, **kwargs)
+    except TypeError:
+        kwargs.pop("type", None)
+        return container.button(label, **kwargs)
 
-st.title("HL7 v2 → FHIR R4 Converter Demo")
-st.markdown(
-    """
-    Upload an HL7 v2 message or start from one of the bundled samples, then convert it into
-    a deterministic FHIR R4 bundle. Each run produces typed references (e.g., `Patient/<id>`)
-    so downstream systems can ingest or persist the data without additional reconciliation.
-    """
-)
 
-samples = _list_samples()
+st.set_page_config(page_title="HL7 → FHIR R4 Converter", page_icon="🧬", layout="wide")
+
+# --- Sidebar inputs ---
 with st.sidebar:
-    st.header("Message Input")
-    chosen_sample = None
-    if samples:
-        default_sample = samples[0]
-        chosen_sample = st.selectbox(
-            "Sample HL7 message", samples, index=samples.index(default_sample)
-        )
-    uploaded = st.file_uploader("Or upload your own", type=["hl7", "txt"])
-    st.sidebar.info(
-        "Need inspiration? Pick a sample to pre-fill the editor, or upload a custom "
-        "HL7 v2 message captured from another system."
-    )
+    st.subheader("Message Input")
+    samples_dir = Path("samples")
+    sample_files = sorted(p.name for p in samples_dir.glob("*.hl7"))
+    sample = None
+    if sample_files:
+        sample = st.selectbox("Sample HL7 message", sample_files, index=0)
+    up = st.file_uploader("Or upload your own", type=["hl7", "txt"])
+    st.caption("Limit 200MB per file • HL7, TXT")
 
-hl7_content = ""
-input_label = ""
-if uploaded is not None:
-    hl7_content = uploaded.getvalue().decode("utf-8")
-    input_label = uploaded.name
-elif chosen_sample:
-    hl7_content = _load_sample(chosen_sample)
-    input_label = chosen_sample
+# Editor state
+if "hl7_text" not in st.session_state:
+    if sample_files:
+        default_sample = Path("samples", sample_files[0])
+        st.session_state.hl7_text = default_sample.read_text(encoding="utf-8")
+        st.session_state.input_label = sample_files[0]
+        st.session_state._last_sample = sample_files[0]
+    else:
+        st.session_state.hl7_text = ""
+        st.session_state.input_label = "hl7_message"
+        st.session_state._last_sample = None
 
-hl7_content = st.text_area(
+# Auto-load when sample changes (no upload)
+if sample and st.session_state.get("_last_sample") != sample and up is None:
+    sample_path = Path("samples", sample)
+    try:
+        st.session_state.hl7_text = sample_path.read_text(encoding="utf-8")
+        st.session_state.input_label = sample
+        st.session_state._last_sample = sample
+    except OSError as exc:
+        st.warning(f"Unable to read sample {sample}: {exc}")
+
+# Uploaded file overrides
+if up is not None:
+    uploaded_text = up.read().decode("utf-8", errors="ignore")
+    st.session_state.hl7_text = uploaded_text
+    st.session_state.input_label = up.name or "uploaded_message"
+    st.session_state._last_sample = None
+
+st.title("HL7 v2 ➜ FHIR R4 Converter Demo")
+st.caption("Test data only — no real PHI.")
+
+hl7_text = st.text_area(
     "HL7 message",
-    value=hl7_content,
-    height=260,
-    placeholder="Paste or upload an HL7 v2 message here to convert it to FHIR...",
+    value=st.session_state.hl7_text,
+    height=220,
+    key="editor",
 )
+st.session_state.hl7_text = hl7_text
 
-col_convert, col_reset = st.columns([1, 1], gap="small")
-convert_clicked = col_convert.button("Convert to FHIR")
-if col_reset.button("Reset editor"):
+c1, c2 = st.columns([1, 1])
+convert = _button(c1, "Convert to FHIR", type="primary")
+reset = _button(c2, "Reset editor")
+if reset:
+    st.session_state.clear()
     _rerun_app()
 
-if convert_clicked:
-    if not hl7_content.strip():
+if convert:
+    if not hl7_text.strip():
         st.warning("Please provide HL7 content before converting.")
     else:
-        with st.spinner("Parsing HL7 message and building FHIR bundle..."):
-            try:
-                bundle = convert_hl7_to_fhir_bundle(hl7_content)
-                bundle_dict = bundle.dict(exclude_none=True)
-            except Exception as exc:  # noqa: BLE001
-                st.error(f"Unable to convert HL7 message: {exc}")
+        result = None
+        error: Exception | None = None
+        elapsed = 0.0
+        status_callable = getattr(st, "status", None)
+        if callable(status_callable):
+            with status_callable("Converting…", expanded=False) as status:
+                t0 = time.time()
+                try:
+                    result = _CONVERT_FN(hl7_text)
+                    elapsed = time.time() - t0
+                    status.update(label=f"Done in {elapsed:.2f}s", state="complete")
+                except Exception as exc:  # noqa: BLE001
+                    error = exc
+                    status.update(label="Conversion failed", state="error")
+        else:
+            with st.spinner("Converting…"):
+                t0 = time.time()
+                try:
+                    result = _CONVERT_FN(hl7_text)
+                    elapsed = time.time() - t0
+                except Exception as exc:  # noqa: BLE001
+                    error = exc
+        if error is not None:
+            logger.exception("Unable to convert HL7 message", exc_info=error)
+            st.error(f"Unable to convert HL7 message: {error}")
+        elif result is None:
+            st.error("Conversion produced no result.")
+        else:
+            normalized = _normalize_result(result)
+            pairs = _pairs_from_result(normalized)
+            if not pairs:
+                st.info("No FHIR resources were produced from this message.")
             else:
-                entries = bundle_dict.get("entry", [])
-                resources = [entry["resource"] for entry in entries if "resource" in entry]
+                total = len(pairs)
+                by_type: dict[str, int] = {}
+                for resource_type, _ in pairs:
+                    by_type[resource_type] = by_type.get(resource_type, 0) + 1
 
-                resource_groups: dict[str, list[dict]] = {}
-                for res in resources:
-                    resource_groups.setdefault(res.get("resourceType", "Unknown"), []).append(res)
+                toast_fn = getattr(st, "toast", None)
+                summary_message = f"Converted ✅ {total} resources across {len(by_type)} types"
+                if callable(toast_fn):
+                    toast_fn(summary_message)
+                else:
+                    st.success(summary_message)
 
-                st.success(
-                    f"Generated {len(resources)} FHIR resources across "
-                    f"{len(resource_groups)} resource type(s)."
-                )
+                chips = " ".join(f"`{rtype}` **{count}**" for rtype, count in sorted(by_type.items()))
+                st.markdown(chips or "_No resources produced_")
 
-                download_name = Path(input_label or "hl7_message").stem + "_bundle.json"
-                st.download_button(
-                    "Download FHIR Bundle",
-                    data=_as_json(bundle_dict),
-                    file_name=download_name,
-                    mime="application/fhir+json",
-                )
+                resources_only = [resource for _, resource in pairs]
+                tab_json, tab_res, tab_quality = st.tabs(["FHIR JSON", "Resources", "Quality"])
 
-                tabs = st.tabs(["FHIR JSON", "Resources by Type"])
-
-                with tabs[0]:
-                    st.json(bundle_dict)
-
-                with tabs[1]:
-                    if not resource_groups:
-                        st.info("No FHIR resources were produced from this message.")
+                with tab_json:
+                    if resources_only:
+                        st.json(resources_only)
+                        json_payload = json.dumps(resources_only, default=_json_ready, ensure_ascii=False, indent=2)
+                        st.download_button(
+                            "Download JSON",
+                            json_payload,
+                            f"{Path(st.session_state.get('input_label', 'hl7_message')).stem}_bundle.json",
+                            "application/json",
+                        )
+                        st.download_button(
+                            "Download NDJSON",
+                            _ndjson(pairs),
+                            f"{Path(st.session_state.get('input_label', 'hl7_message')).stem}_bundle.ndjson",
+                            "application/x-ndjson",
+                        )
                     else:
-                        for rtype, items in resource_groups.items():
-                            with st.expander(f"{rtype} ({len(items)})", expanded=True):
-                                for idx, resource in enumerate(items, start=1):
-                                    resource_id = resource.get("id", f"{rtype}-{idx}")
-                                    st.markdown(f"**{resource_id}**")
-                                    st.json(resource)
+                        st.info("No FHIR resources available.")
+
+                with tab_res:
+                    if not resources_only:
+                        st.info("No FHIR resources available.")
+                    else:
+                        for resource_type, resource in pairs:
+                            label = f"{resource_type} — {resource.get('id', 'no-id')}"
+                            with st.expander(label, expanded=False):
+                                st.json(resource)
+
+                with tab_quality:
+                    if not resources_only:
+                        st.info("No FHIR resources available.")
+                    else:
+                        rows = [
+                            {"type": resource_type, "completeness": completeness_score(resource_type, resource)}
+                            for resource_type, resource in pairs
+                        ]
+                        st.dataframe(rows, use_container_width=True)
+
+                st.divider()
+                toggle_callable = getattr(st, "toggle", None)
+                if callable(toggle_callable):
+                    redact = toggle_callable("De-identify PHI (mask names/IDs)")
+                else:
+                    redact = st.checkbox("De-identify PHI (mask names/IDs)", value=False)
+                safe_pairs = [
+                    (resource_type, _mask_patient(deepcopy(resource)) if redact else resource)
+                    for resource_type, resource in pairs
+                ]
+
+                st.subheader("Send to FHIR (optional)")
+                default_base = os.getenv("FHIR_BASE_URL", "http://localhost:8080/fhir")
+                base = st.text_input("FHIR base URL", value=default_base)
+                token_default = os.getenv("AUTH_TOKEN", "")
+                token = st.text_input("Bearer token (optional)", type="password", value=token_default)
+
+                if st.button("POST all resources"):
+                    if not safe_pairs:
+                        st.info("No resources to send.")
+                    else:
+                        try:
+                            import httpx
+                        except ImportError:
+                            st.error("httpx is required to POST resources. Please install it in this environment.")
+                        else:
+                            headers = {"Content-Type": "application/fhir+json"}
+                            if token:
+                                headers["Authorization"] = f"Bearer {token}"
+                            posted: list[dict[str, Any]] = []
+                            errors: list[str] = []
+                            try:
+                                with httpx.Client(timeout=15.0) as client:
+                                    for resource_type, resource in safe_pairs:
+                                        url = f"{base.rstrip('/')}/{resource_type}"
+                                        try:
+                                            response = client.post(url, headers=headers, json=resource)
+                                            posted.append({"resourceType": resource_type, "status": response.status_code})
+                                        except httpx.HTTPError as http_err:
+                                            message = f"{resource_type}: {http_err}"
+                                            errors.append(message)
+                                            posted.append({"resourceType": resource_type, "status": "error"})
+                            except Exception as exc:  # noqa: BLE001
+                                logger.exception("Failed to POST resources to FHIR", exc_info=exc)
+                                st.error(f"Failed to POST to FHIR: {exc}")
+                            else:
+                                if errors:
+                                    for msg in errors:
+                                        st.warning(msg)
+                                st.success("POST complete")
+                                if posted:
+                                    st.table(posted)

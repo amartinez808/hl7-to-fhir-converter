@@ -1,0 +1,10 @@
+[theme]
+base = "dark"
+primaryColor = "#30D158"
+font = "Inter"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
