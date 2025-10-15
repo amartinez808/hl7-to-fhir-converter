@@ -22,6 +22,9 @@ import sys
 from collections.abc import Iterable
 from copy import deepcopy
 from datetime import date, datetime, timezone
+from decimal import Decimal
+from enum import Enum
+from typing import Any
 
 from fhir.resources.address import Address
 
@@ -43,6 +46,13 @@ from fhir.resources.reference import Reference
 from fhir.resources.timing import Timing
 from hl7apy.core import Segment
 from hl7apy.parser import parse_message
+
+
+try:
+    from app.quality.terminology import map_code
+except Exception:  # pragma: no cover - fallback for minimal environments
+    def map_code(table: str, code: str | None):  # type: ignore
+        return None
 
 
 # --------------------------
@@ -77,6 +87,21 @@ def as_dt_iso(ts: str | None) -> str | None:
 
 def gender_map(g: str | None) -> str | None:
     return {"M": "male", "F": "female", "O": "other", "U": "unknown"}.get(str(g or "").upper())
+
+
+def resolve_observation_coding(obx3: str | None) -> tuple[str | None, str | None, str]:
+    """Resolve OBX-3 coding to a structured (code, display, system) tuple."""
+    code = comp(obx3, 1)
+    text = comp(obx3, 2)
+    system = comp(obx3, 3) or "http://loinc.org"
+    mapping = map_code("loinc", code) or map_code("local_to_loinc", code)
+    if not mapping and code:
+        mapping = map_code("local_to_loinc", code.upper())
+    if mapping:
+        system = mapping.get("system", system)
+        code = mapping.get("code", code)
+        text = mapping.get("display") or text or code
+    return code, text or code, system
 
 
 def iter_segments(node) -> Iterable[Segment]:
@@ -139,6 +164,14 @@ def build_patient(pid: Segment) -> tuple[Patient, str]:
     name_raw = field_value(pid, fields, 5)
     family = comp(name_raw, 1)
     given = comp(name_raw, 2)
+    name_kwargs: dict[str, Any] = {}
+    if family:
+        name_kwargs["family"] = family
+    if given:
+        name_kwargs["given"] = [given]
+    if not name_kwargs and name_raw:
+        name_kwargs["text"] = str(name_raw).replace("^", " ").strip() or None
+    patient_name = HumanName(**{k: v for k, v in name_kwargs.items() if v})
 
     addr_raw = field_value(pid, fields, 11)
     line = comp(addr_raw, 1)
@@ -152,13 +185,24 @@ def build_patient(pid: Segment) -> tuple[Patient, str]:
         birth_date = datetime.strptime(birth_raw[:8], "%Y%m%d").date().isoformat()
 
     pat_id = f"pat-{mrn}"
+    address_args: dict[str, Any] = {}
+    if line:
+        address_args["line"] = [line]
+    if city:
+        address_args["city"] = city
+    if state:
+        address_args["state"] = state
+    if postal:
+        address_args["postalCode"] = postal
+    address = Address(**address_args) if address_args else None
+
     patient = Patient(
         id=pat_id,
         identifier=[{"system": "urn:sys:HOSP", "value": mrn}],
-        name=[HumanName(family=family, given=[given] if given else None)],
+        name=[patient_name] if patient_name else None,
         gender=gender_map(field_value(pid, fields, 8)),
         birthDate=birth_date,
-        address=[Address(line=[line] if line else None, city=city, state=state, postalCode=postal)],
+        address=[address] if address else None,
     )
     return patient, mrn
 
@@ -242,8 +286,9 @@ def build_observation_from_obx(
 ) -> Observation:
     fields = segment_fields(obx)
     obx3 = field_value(obx, fields, 3)
-    loinc_code = comp(obx3, 1)
-    loinc_text = comp(obx3, 2)
+    loinc_code, loinc_text, loinc_system = resolve_observation_coding(obx3)
+    coding_code = loinc_code or "unknown"
+    coding_text = loinc_text or coding_code
 
     value_type = (field_value(obx, fields, 2) or "ST").upper()
     val = field_value(obx, fields, 5)
@@ -254,13 +299,19 @@ def build_observation_from_obx(
     status = obx_status_map(field_value(obx, fields, 11))
     eff = as_dt_iso(field_value(obx, fields, 14))
 
-    obs_id = f"obs-{mrn}-{(loinc_code or 'unk')}-{idx:02d}"
+    obs_id = f"obs-{mrn}-{coding_code}-{idx:02d}"
     obs = Observation(
         id=obs_id,
         status=status,
         code=CodeableConcept(
-            coding=[Coding(system="http://loinc.org", code=loinc_code, display=loinc_text)],
-            text=loinc_text or loinc_code,
+            coding=[
+                Coding(
+                    system=loinc_system,
+                    code=coding_code,
+                    display=coding_text,
+                )
+            ],
+            text=coding_text,
         ),
         subject=patient_ref,
         encounter=enc_ref,
@@ -400,9 +451,25 @@ def _post_process_bundle_dict(data: dict) -> dict:
     return _json_ready(result)
 
 
-def _json_ready(value):
+def _json_ready(value: Any):
+    if hasattr(value, "dict"):
+        try:
+            return value.dict(exclude_none=True)
+        except TypeError:
+            return value.dict()
+    if hasattr(value, "model_dump"):
+        try:
+            return value.model_dump(exclude_none=True)
+        except TypeError:
+            return value.model_dump()
     if isinstance(value, (datetime, date)):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (bytes, bytearray)):
+        return value.decode("utf-8", errors="ignore")
     if isinstance(value, list):
         return [_json_ready(v) for v in value]
     if isinstance(value, dict):
@@ -468,6 +535,18 @@ def convert_hl7_to_fhir_bundle(hl7_text: str) -> BundleResult:
 
     bundle = Bundle(type="collection", entry=entries)
     return BundleResult(bundle)
+
+
+def convert_hl7_to_fhir(hl7_text: str) -> list[tuple[str, dict]]:
+    """Return a list of (resourceType, resource_dict) pairs for convenience."""
+    bundle = convert_hl7_to_fhir_bundle(hl7_text)
+    data = bundle.dict(exclude_none=True)
+    pairs: list[tuple[str, dict]] = []
+    for entry in data.get("entry", []):
+        resource = entry.get("resource")
+        if isinstance(resource, dict):
+            pairs.append((resource.get("resourceType", "Unknown"), resource))
+    return pairs
 
 
 def main():

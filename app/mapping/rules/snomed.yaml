@@ -1,0 +1,12 @@
+44054006:
+  system: "http://snomed.info/sct"
+  code: "44054006"
+  display: "Diabetes mellitus type 2 (disorder)"
+38341003:
+  system: "http://snomed.info/sct"
+  code: "38341003"
+  display: "Hypertensive disorder, systemic arterial (disorder)"
+109006:
+  system: "http://snomed.info/sct"
+  code: "109006"
+  display: "Pneumonia"

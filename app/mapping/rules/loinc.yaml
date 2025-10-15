@@ -1,0 +1,20 @@
+718-7:
+  system: "http://loinc.org"
+  code: "718-7"
+  display: "Hemoglobin [Mass/volume] in Blood"
+2345-7:
+  system: "http://loinc.org"
+  code: "2345-7"
+  display: "Glucose [Mass/volume] in Serum or Plasma"
+8310-5:
+  system: "http://loinc.org"
+  code: "8310-5"
+  display: "Body temperature"
+8480-6:
+  system: "http://loinc.org"
+  code: "8480-6"
+  display: "Systolic blood pressure"
+8462-4:
+  system: "http://loinc.org"
+  code: "8462-4"
+  display: "Diastolic blood pressure"
