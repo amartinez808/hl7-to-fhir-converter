@@ -7,3 +7,6 @@ build/
 .vscode/
 *.json
 output/
+streamlit.log
+.streamlit/secrets.toml
+out/
