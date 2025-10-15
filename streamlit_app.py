@@ -151,6 +151,14 @@ def _button(container, label: str, **kwargs) -> bool:
         return container.button(label, **kwargs)
 
 
+def _dataframe(data, **kwargs):
+    try:
+        return st.dataframe(data, **kwargs)
+    except TypeError:
+        kwargs.pop("use_container_width", None)
+        return st.dataframe(data, **kwargs)
+
+
 st.set_page_config(page_title="HL7 → FHIR R4 Converter", page_icon="🧬", layout="wide")
 
 # Inject modern font styling (fallback keeps Streamlit defaults if loading fails)
@@ -318,7 +326,7 @@ if convert:
                             {"type": resource_type, "completeness": completeness_score(resource_type, resource)}
                             for resource_type, resource in pairs
                         ]
-                        st.dataframe(rows, use_container_width=True)
+                        _dataframe(rows, use_container_width=True)
 
                 st.divider()
                 toggle_callable = getattr(st, "toggle", None)
