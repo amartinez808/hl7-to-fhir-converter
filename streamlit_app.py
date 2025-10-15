@@ -93,7 +93,7 @@ hl7_content = st.text_area(
 )
 
 col_convert, col_reset = st.columns([1, 1], gap="small")
-convert_clicked = col_convert.button("Convert to FHIR", type="primary")
+convert_clicked = col_convert.button("Convert to FHIR")
 if col_reset.button("Reset editor"):
     st.rerun()
 
