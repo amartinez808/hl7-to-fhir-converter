@@ -20,6 +20,7 @@ from typing import Any
 
 import streamlit as st
 
+from app.copilot import ConversionCopilot
 from app.adapters.fhir_client import FHIRClient
 from app.orchestration.workflows.referral_intake import build_referral_intake_workflow
 from app.quality.anomaly import detect_anomalies
@@ -141,6 +142,34 @@ def _dataframe(data, **kwargs):
         return st.dataframe(data, **kwargs)
 
 
+def _render_copilot(agent: ConversionCopilot):
+    st.divider()
+    st.subheader("Conversion Copilot")
+    chat_messages = list(agent.conversation())
+    if hasattr(st, "chat_message"):
+        for message in chat_messages:
+            role = message.role if message.role in {"assistant", "user"} else "assistant"
+            with st.chat_message(role):
+                st.markdown(message.content)
+        chat_input_fn = getattr(st, "chat_input", None)
+        prompt = chat_input_fn("Ask the copilot about this conversion") if callable(chat_input_fn) else None
+        if prompt:
+            agent.chat(prompt)
+            st.session_state["copilot_agent"] = agent
+            _rerun_app()
+    else:
+        for message in chat_messages:
+            st.markdown(f"**{message.role.title()}:** {message.content}")
+        with st.form("copilot_fallback"):
+            prompt = st.text_area("Ask the copilot about this conversion", key="copilot_prompt")
+            submitted = st.form_submit_button("Send")
+        if submitted and prompt.strip():
+            agent.chat(prompt)
+            st.session_state["copilot_agent"] = agent
+            st.session_state["copilot_prompt"] = ""
+            _rerun_app()
+
+
 st.set_page_config(page_title="HL7 → FHIR R4 Converter", page_icon="🧬", layout="wide")
 
 # Inject modern font styling (fallback keeps Streamlit defaults if loading fails)
@@ -246,9 +275,27 @@ if convert:
         if error is not None:
             logger.exception("Unable to convert HL7 message", exc_info=error)
             st.error(f"Unable to convert HL7 message: {error}")
+            st.session_state["copilot_agent"] = ConversionCopilot.from_payload(
+                hl7_text,
+                result,
+                duration_seconds=elapsed or None,
+                error=error,
+            )
         elif result is None:
             st.error("Conversion produced no result.")
+            st.session_state["copilot_agent"] = ConversionCopilot.from_payload(
+                hl7_text,
+                result,
+                duration_seconds=elapsed or None,
+                error=None,
+            )
         else:
+            st.session_state["copilot_agent"] = ConversionCopilot.from_payload(
+                hl7_text,
+                result,
+                duration_seconds=elapsed or None,
+                error=None,
+            )
             normalized = _normalize_result(result)
             pairs = _pairs_from_result(normalized)
             if not pairs:
@@ -385,3 +432,7 @@ if convert:
                         context = workflow.run({})
                         audit_event("workflow", "Patient", patient_resource.get("id"), "streamlit-ui")
                         st.json(context)
+
+copilot_agent = st.session_state.get("copilot_agent")
+if copilot_agent:
+    _render_copilot(copilot_agent)

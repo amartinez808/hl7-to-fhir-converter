@@ -13,6 +13,7 @@ This project is built for interoperability sandboxes and proof-of-concept enviro
 - **Privacy & audit:** A reusable de-identification helper masks patient names/identifiers, while an `AuditEvent` NDJSON log captures every POST or workflow run (`out/audit_events.ndjson`).
 - **Streamlit experience:** Summary chips, JSON/NDJSON download buttons, de-id toggle, POST-to-FHIR controls, and a referral-intake workflow simulator keep exploration self-contained.
 - **Workflow ready:** A minimal `FHIRClient` plus orchestration agent show how to stitch “find or create patient” and “create planned encounter” flows together.
+- **Conversion copilot:** A conversational panel explains HL7 parsing decisions, highlights missing segments or anomalies, and suggests next steps directly in the Streamlit demo.
 - **Container-friendly:** Non-root Docker image with health-checked `docker-compose.yml` makes demos portable.
 
 ## Quickstart
@@ -101,6 +102,7 @@ curl -X POST "$FHIR_BASE/Patient" \
 
 ## Streamlit demo tips
 - Use the **De-identify PHI** toggle before sharing screenshots or POSTing outside the lab.
+- Chat with the **Conversion Copilot** (bottom of the page) to get segment-by-segment explanations, warnings, and recommendation follow-ups after each conversion.
 - The **Quality** tab lists completeness scores per resource; expand any red flag to read anomaly details.
 - **Download JSON / NDJSON** buttons give you ready-to-share payloads.
 - The **Send to FHIR** section uses the built-in `FHIRClient`; audit entries appear in `out/audit_events.ndjson`.
