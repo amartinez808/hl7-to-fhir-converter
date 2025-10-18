@@ -13,7 +13,7 @@ This project is built for interoperability sandboxes and proof-of-concept enviro
 - **Privacy & audit:** A reusable de-identification helper masks patient names/identifiers, while an `AuditEvent` NDJSON log captures every POST or workflow run (`out/audit_events.ndjson`).
 - **Streamlit experience:** Summary chips, JSON/NDJSON download buttons, de-id toggle, POST-to-FHIR controls, and a referral-intake workflow simulator keep exploration self-contained.
 - **Workflow ready:** A minimal `FHIRClient` plus orchestration agent show how to stitch “find or create patient” and “create planned encounter” flows together.
-- **Conversion copilot:** A conversational panel explains HL7 parsing decisions, highlights missing segments or anomalies, and suggests next steps directly in the Streamlit demo.
+- **Conversion copilot:** A conversational panel explains HL7 parsing decisions, highlights missing segments or anomalies, and suggests next steps directly in the Streamlit demo. When an `OPENAI_API_KEY` is present, ClipFHIR upgrades to GPT-powered responses.
 - **Container-friendly:** Non-root Docker image with health-checked `docker-compose.yml` makes demos portable.
 
 ## Quickstart
@@ -99,6 +99,16 @@ curl -X POST "$FHIR_BASE/Patient" \
   -H "Content-Type: application/fhir+json" \
   -d @bundle.json
 ```
+
+### Optional: enable GPT-powered ClipFHIR
+Set your OpenAI credentials before launching Streamlit (or the CLI) to let the copilot call GPT for open-ended questions:
+```bash
+export OPENAI_API_KEY=sk-...        # required
+export COPILOT_GPT_MODEL=gpt-4o-mini  # optional, defaults to gpt-4o-mini
+# export OPENAI_API_BASE=https://api.openai.com/v1/chat/completions  # optional override
+# export COPILOT_GPT_TEMPERATURE=0.3                                 # optional tuning
+```
+Unset `COPILOT_USE_GPT=off` to force rule-based replies.
 
 ## Streamlit demo tips
 - Use the **De-identify PHI** toggle before sharing screenshots or POSTing outside the lab.

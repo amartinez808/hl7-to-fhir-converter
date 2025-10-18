@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import random
+
+from dataclasses import dataclass
 from typing import Any, Iterable
 
 from .context import ConversionContext, ResourceInsight
+from .llm import GPTResponder
+
+DEFAULT_FALLBACK = (
+    "I'm still mulling that over. Try asking about specific segments, warnings, or say 'help' for inspiration."
+)
 
 
 @dataclass(slots=True)
@@ -19,13 +26,15 @@ class ChatMessage:
 class ConversionCopilot:
     """Light-weight conversational layer over conversion diagnostics."""
 
-    def __init__(self, context: ConversionContext):
+    def __init__(self, context: ConversionContext, llm: GPTResponder | None = None):
         self.context = context
         self.history: list[ChatMessage] = []
+        self.persona_name = "ClipFHIR"
+        self.llm = llm
         self._bootstrap()
 
     def _bootstrap(self) -> None:
-        summary = self._initial_summary()
+        summary = self._intro_message()
         self._append("assistant", summary)
         if self.context.warnings:
             warning_lines = "\n".join(f"• {warning}" for warning in self.context.warnings)
@@ -39,6 +48,16 @@ class ConversionCopilot:
 
     def _append(self, role: str, content: str) -> None:
         self.history.append(ChatMessage(role=role, content=content.strip()))
+
+    def _intro_message(self) -> str:
+        opening = random.choice(
+            [
+                "Hey there! ClipFHIR the conversion companion sliding onto your screen.",
+                "Hi! ClipFHIR here—your HL7-to-FHIR wingmate.",
+                "👋 ClipFHIR checking in. Looks like a fresh bundle is brewing!",
+            ]
+        )
+        return f"{opening}\n\n{self._initial_summary()}"
 
     def _initial_summary(self) -> str:
         ctx = self.context
@@ -117,6 +136,21 @@ class ConversionCopilot:
         return response
 
     def _respond(self, question: str) -> str:
+        rule_reply = self._rule_based_response(question)
+        if rule_reply is not None:
+            return rule_reply
+        if self.llm:
+            llm_history = [
+                {"role": msg.role if msg.role in {"assistant", "user"} else "assistant", "content": msg.content}
+                for msg in self.history[:-1]
+                if msg.content
+            ]
+            llm_reply = self.llm.reply(question, self.context, llm_history)
+            if llm_reply:
+                return llm_reply
+        return DEFAULT_FALLBACK
+
+    def _rule_based_response(self, question: str) -> str | None:
         lowered = question.lower()
 
         if "warning" in lowered or "issue" in lowered or "problem" in lowered:
@@ -125,6 +159,18 @@ class ConversionCopilot:
             if self.context.errors:
                 return "\n".join(self.context.errors)
             return "No conversion issues detected."
+
+        if any(greeting in lowered for greeting in ("hi", "hello", "hey", "hiya")):
+            return (
+                "Hello! ClipFHIR here with a magnifying glass on your bundle.\n"
+                "Ask me about segments, resources, or what to double-check before sending downstream."
+            )
+
+        if "thanks" in lowered or "thank" in lowered:
+            return "Happy to help! I live to make HL7 a little less mysterious. Anything else?"
+
+        if "clippy" in lowered:
+            return "Close! I'm ClipFHIR, a distant cousin of Clippy with far better taste in interoperability."
 
         for segment in ("PID", "PV1", "OBR", "OBX", "MSH", "RXE", "RXO"):
             if segment.lower() in lowered:
@@ -162,15 +208,11 @@ class ConversionCopilot:
 
         if "help" in lowered or "what can you do" in lowered:
             return (
-                "I can summarise the parsed segments, highlight missing ones, and describe each FHIR resource that was produced. "
-                "Ask about specific segments (PID, OBX…), resources (Observation, Patient…), or request warnings and next steps."
+                "I can spot check segments, recap each FHIR resource, hint at mapping follow-ups, and share suggested next steps.\n"
+                "Try asking things like “How did PID map?” or “Any anomalies I should fix?”"
             )
 
-        default_lines = [
-            "I didn't spot anything specific in that question.",
-            "You can ask about warning details, resource summaries, or next steps for this bundle.",
-        ]
-        return "\n".join(default_lines)
+        return None
 
     def conversation(self) -> Iterable[ChatMessage]:
         return tuple(self.history)
@@ -188,6 +230,7 @@ class ConversionCopilot:
         error: Exception | None = None,
     ) -> "ConversionCopilot":
         from .context import build_context
+        from .llm import load_responder_from_env
 
         context = build_context(
             hl7_text,
@@ -195,7 +238,8 @@ class ConversionCopilot:
             duration_seconds=duration_seconds,
             error=error,
         )
-        return cls(context)
+        llm = load_responder_from_env()
+        return cls(context, llm=llm)
 
 
 __all__ = ["ChatMessage", "ConversionCopilot"]

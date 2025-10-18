@@ -7,6 +7,8 @@ Run with:
 
 from __future__ import annotations
 
+import base64
+import html
 import json
 import logging
 import os
@@ -17,6 +19,7 @@ from decimal import Decimal
 from enum import Enum
 from pathlib import Path
 from typing import Any
+from functools import lru_cache
 
 import streamlit as st
 
@@ -142,26 +145,187 @@ def _dataframe(data, **kwargs):
         return st.dataframe(data, **kwargs)
 
 
+_COPILOT_SVG = """
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140">
+  <defs>
+    <linearGradient id="clipFHIRGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#6D8CFB"/>
+      <stop offset="100%" stop-color="#8FE3FF"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M50 30 C40 10 70 5 85 30 L105 70 C115 90 105 120 75 120 C45 120 35 90 45 70 L65 30" stroke="url(#clipFHIRGradient)" stroke-width="12"/>
+    <path d="M60 44 C55 60 72 68 78 56" stroke="#FFFFFF" stroke-width="10"/>
+    <circle cx="62" cy="64" r="6" fill="#22356F"/>
+    <circle cx="86" cy="72" r="8" fill="#22356F"/>
+    <circle cx="86" cy="70" r="3" fill="#FFFFFF"/>
+    <circle cx="62" cy="62" r="2.5" fill="#FFFFFF"/>
+    <path d="M70 92 C80 104 92 100 98 92" stroke="#22356F" stroke-width="6" />
+  </g>
+  <ellipse cx="80" cy="126" rx="34" ry="8" fill="rgba(34,53,111,0.15)"/>
+</svg>
+""".strip()
+
+_COPILOT_STYLE = """
+<style>
+.copilot-mascot {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.5rem;
+}
+.copilot-mascot img {
+    width: 52px;
+    height: 52px;
+    filter: drop-shadow(0 6px 12px rgba(88, 131, 255, 0.25));
+}
+.copilot-mascot-text strong {
+    display: block;
+    font-weight: 700;
+}
+.copilot-mascot-text span {
+    font-size: 0.9rem;
+    color: rgba(44, 56, 92, 0.82);
+}
+.copilot-status {
+    font-size: 0.72rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(44, 56, 92, 0.65);
+    margin-bottom: 0.5rem;
+}
+.copilot-scroll {
+    max-height: 16rem;
+    overflow-y: auto;
+    padding-right: 0.25rem;
+    margin-bottom: 0.75rem;
+}
+.copilot-scroll::-webkit-scrollbar {
+    width: 6px;
+}
+.copilot-scroll::-webkit-scrollbar-thumb {
+    background: rgba(93, 113, 255, 0.35);
+    border-radius: 3px;
+}
+.copilot-bubble {
+    border-radius: 12px;
+    padding: 0.65rem 0.8rem;
+    margin-bottom: 0.6rem;
+    background: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 6px 20px rgba(17, 27, 71, 0.12);
+}
+.copilot-bubble--assistant {
+    background: linear-gradient(135deg, rgba(109, 140, 251, 0.18), rgba(143, 227, 255, 0.14));
+    border: 1px solid rgba(109, 140, 251, 0.35);
+}
+.copilot-bubble--user {
+    background: rgba(255, 255, 255, 0.96);
+    border: 1px solid rgba(44, 80, 160, 0.08);
+}
+.copilot-bubble__role {
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 0.25rem;
+    color: rgba(44, 56, 92, 0.62);
+}
+.copilot-bubble__content {
+    font-size: 0.94rem;
+    line-height: 1.35rem;
+}
+.copilot-empty {
+    padding: 0.75rem;
+    color: rgba(44, 56, 92, 0.7);
+    font-style: italic;
+}
+</style>
+""".strip()
+
+
+@lru_cache(maxsize=1)
+def _copilot_avatar_uri() -> str:
+    encoded = base64.b64encode(_COPILOT_SVG.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+
+def _copilot_messages_html(messages: list) -> str:
+    if not messages:
+        return "<div class='copilot-empty'>Ask me anything about this bundle!</div>"
+    bubbles: list[str] = []
+    for message in messages:
+        role = "assistant" if message.role != "user" else "user"
+        role_label = "ClipFHIR" if role == "assistant" else "You"
+        safe_lines = "<br/>".join(html.escape(line) for line in message.content.splitlines())
+        bubbles.append(
+            f"""
+            <div class="copilot-bubble copilot-bubble--{role}">
+                <div class="copilot-bubble__role">{role_label}</div>
+                <div class="copilot-bubble__content">{safe_lines}</div>
+            </div>
+            """
+        )
+    return "\n".join(bubbles)
+
+
 def _render_copilot(agent: ConversionCopilot):
-    st.divider()
-    st.subheader("Conversion Copilot")
+    st.markdown(_COPILOT_STYLE, unsafe_allow_html=True)
     chat_messages = list(agent.conversation())
-    if hasattr(st, "chat_message"):
+    popover_fn = getattr(st, "popover", None)
+    if callable(popover_fn):
+        with popover_fn("✨ ClipFHIR Copilot", help="A playful helper that explains each conversion step"):
+            st.markdown(
+                f"""
+                <div class="copilot-mascot">
+                    <img src="{_copilot_avatar_uri()}" alt="ClipFHIR mascot" />
+                    <div class="copilot-mascot-text">
+                        <strong>ClipFHIR</strong>
+                        <span>It looks like you're transforming HL7!</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            status_label = "GPT-powered responses enabled" if getattr(agent, "llm", None) else "Offline rule-based responses"
+            st.markdown(f"<div class='copilot-status'>{status_label}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div class='copilot-scroll'>{_copilot_messages_html(chat_messages)}</div>", unsafe_allow_html=True)
+            with st.form("copilot_popover_form", clear_on_submit=False):
+                prompt_value = st.text_input(
+                    "Ask ClipFHIR something",
+                    value=st.session_state.get("copilot_popover_input", ""),
+                    key="copilot_popover_input",
+                    placeholder="e.g. Where did the OBX go?",
+                )
+                submitted = st.form_submit_button("Send", use_container_width=True)
+            if submitted and prompt_value.strip():
+                agent.chat(prompt_value)
+                st.session_state["copilot_agent"] = agent
+                st.session_state["copilot_popover_input"] = ""
+                _rerun_app()
+    elif hasattr(st, "chat_message"):
+        st.divider()
+        st.subheader("ClipFHIR Copilot")
+        status_label = "GPT-powered responses enabled" if getattr(agent, "llm", None) else "Offline rule-based responses"
+        st.caption(status_label)
         for message in chat_messages:
             role = message.role if message.role in {"assistant", "user"} else "assistant"
-            with st.chat_message(role):
+            avatar = _copilot_avatar_uri() if role == "assistant" else "👩‍💻"
+            with st.chat_message(role, avatar=avatar):
                 st.markdown(message.content)
         chat_input_fn = getattr(st, "chat_input", None)
-        prompt = chat_input_fn("Ask the copilot about this conversion") if callable(chat_input_fn) else None
+        prompt = chat_input_fn("Ask ClipFHIR about this conversion") if callable(chat_input_fn) else None
         if prompt:
             agent.chat(prompt)
             st.session_state["copilot_agent"] = agent
             _rerun_app()
     else:
+        st.divider()
+        st.subheader("ClipFHIR Copilot")
+        status_label = "GPT-powered responses enabled" if getattr(agent, "llm", None) else "Offline rule-based responses"
+        st.caption(status_label)
         for message in chat_messages:
             st.markdown(f"**{message.role.title()}:** {message.content}")
         with st.form("copilot_fallback"):
-            prompt = st.text_area("Ask the copilot about this conversion", key="copilot_prompt")
+            prompt = st.text_area("Ask ClipFHIR about this conversion", key="copilot_prompt")
             submitted = st.form_submit_button("Send")
         if submitted and prompt.strip():
             agent.chat(prompt)
