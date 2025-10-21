@@ -1,4 +1,9 @@
-MSH|^~\&|EHR|HOSP|PHARM|HOSP|202510131330||RDE^O11|10007|P|2.3
-PID|1||555555^^^HOSP||White^Susan
-ORC|NW|MED123
-RXE|^^^12345^Lisinopril|10|mg|PO|QD
+MSH|^~\&|EHR|HORIZON|PHARM|HORIZON|202510141345||RDE^O11|RDE-10007|P|2.5.1
+PID|1||555555^^^HORIZON^MR||White^Susan^Marie||19761230|F||2106-3^White^CDCREC|456 Oak Ave^^Anytown^CA^12345^USA||(555)555-2323|||M|ENG
+PV1|1|O|PHARM^AMB^01^HORIZON^OP|||||5678^Taylor^Emily^PA^^^^^NPI||||||||AMB|R
+ORC|NW|MED12345|MED12345|RX77889^HORIZONPHARM^ACC|CM||||202510141340|5678^Taylor^Emily^PA^^^^^NPI|1234^Smith^Jane^MD^^^^^NPI
+RXE|1|^^^153940^Lisinopril-hydrochlorothiazide 10-12.5 mg tablet^RXNORM|1|tablet|PO QAM
+RXR|PO|Oral|Tablet|Take with morning meal
+RXC|A|^^^153940^Lisinopril^RXNORM|10|mg
+RXC|B|^^^964^Hydrochlorothiazide^RXNORM|12.5|mg
+NTE|1|L|Monitor blood pressure weekly and report readings over 150/90.

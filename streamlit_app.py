@@ -23,7 +23,7 @@ from functools import lru_cache
 
 import streamlit as st
 
-from app.copilot import ConversionCopilot
+from app.copilot import ConversionCopilot, ConversionContext
 from app.adapters.fhir_client import FHIRClient
 from app.orchestration.workflows.referral_intake import build_referral_intake_workflow
 from app.quality.anomaly import detect_anomalies
@@ -145,6 +145,35 @@ def _dataframe(data, **kwargs):
         return st.dataframe(data, **kwargs)
 
 
+def _new_copilot_agent(seed_text: str | None) -> ConversionCopilot:
+    text = seed_text or ""
+    if text.strip():
+        return ConversionCopilot.from_payload(text, None)
+    placeholder = ConversionContext(
+        success=True,
+        message_type=None,
+        trigger_event=None,
+        timestamp=datetime.utcnow(),
+        duration_seconds=None,
+        segment_counts={},
+        missing_segments=[],
+        warnings=["Load an HL7 message to analyze and I'll break it down."],
+        errors=[],
+        resources=[],
+        normalized_hl7="",
+    )
+    return ConversionCopilot(placeholder)
+
+
+def _init_copilot_if_missing(seed_text: str | None) -> None:
+    if "copilot_agent" not in st.session_state:
+        st.session_state["copilot_agent"] = _new_copilot_agent(seed_text)
+
+
+def _reset_copilot(seed_text: str | None) -> None:
+    st.session_state["copilot_agent"] = _new_copilot_agent(seed_text)
+
+
 _COPILOT_SVG = """
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140">
   <defs>
@@ -168,6 +197,14 @@ _COPILOT_SVG = """
 
 _COPILOT_STYLE = """
 <style>
+.copilot-card {
+    background: linear-gradient(145deg, rgba(245, 247, 255, 0.95), rgba(255, 255, 255, 0.96));
+    border-radius: 18px;
+    padding: 0.9rem 1rem;
+    box-shadow: 0 14px 34px rgba(37, 55, 113, 0.15);
+    border: 1px solid rgba(109, 140, 251, 0.15);
+    margin-bottom: 0.85rem;
+}
 .copilot-mascot {
     display: flex;
     align-items: center;
@@ -270,68 +307,41 @@ def _copilot_messages_html(messages: list) -> str:
 def _render_copilot(agent: ConversionCopilot):
     st.markdown(_COPILOT_STYLE, unsafe_allow_html=True)
     chat_messages = list(agent.conversation())
-    popover_fn = getattr(st, "popover", None)
-    if callable(popover_fn):
-        with popover_fn("✨ ClipFHIR Copilot", help="A playful helper that explains each conversion step"):
-            st.markdown(
-                f"""
-                <div class="copilot-mascot">
-                    <img src="{_copilot_avatar_uri()}" alt="ClipFHIR mascot" />
-                    <div class="copilot-mascot-text">
-                        <strong>ClipFHIR</strong>
-                        <span>It looks like you're transforming HL7!</span>
-                    </div>
+    status_label = "GPT-powered responses enabled" if getattr(agent, "llm", None) else "Offline rule-based responses"
+    st.markdown(
+        f"""
+        <div class="copilot-card">
+            <div class="copilot-mascot">
+                <img src="{_copilot_avatar_uri()}" alt="ClipFHIR mascot" />
+                <div class="copilot-mascot-text">
+                    <strong>ClipFHIR</strong>
+                    <span>It looks like you're transforming HL7!</span>
                 </div>
-                """,
-                unsafe_allow_html=True,
+            </div>
+            <div class="copilot-status">{status_label}</div>
+            <div class="copilot-scroll">{_copilot_messages_html(chat_messages)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    submitted = False
+    prompt_value = ""
+    with st.form("copilot_panel_form", clear_on_submit=False):
+        input_col, button_col = st.columns([4, 1])
+        with input_col:
+            prompt_value = st.text_input(
+                "Ask ClipFHIR something",
+                key="copilot_prompt",
+                placeholder="e.g. Where did the OBX go?",
+                label_visibility="collapsed",
             )
-            status_label = "GPT-powered responses enabled" if getattr(agent, "llm", None) else "Offline rule-based responses"
-            st.markdown(f"<div class='copilot-status'>{status_label}</div>", unsafe_allow_html=True)
-            st.markdown(f"<div class='copilot-scroll'>{_copilot_messages_html(chat_messages)}</div>", unsafe_allow_html=True)
-            with st.form("copilot_popover_form", clear_on_submit=False):
-                prompt_value = st.text_input(
-                    "Ask ClipFHIR something",
-                    value=st.session_state.get("copilot_popover_input", ""),
-                    key="copilot_popover_input",
-                    placeholder="e.g. Where did the OBX go?",
-                )
-                submitted = st.form_submit_button("Send", use_container_width=True)
-            if submitted and prompt_value.strip():
-                agent.chat(prompt_value)
-                st.session_state["copilot_agent"] = agent
-                st.session_state["copilot_popover_input"] = ""
-                _rerun_app()
-    elif hasattr(st, "chat_message"):
-        st.divider()
-        st.subheader("ClipFHIR Copilot")
-        status_label = "GPT-powered responses enabled" if getattr(agent, "llm", None) else "Offline rule-based responses"
-        st.caption(status_label)
-        for message in chat_messages:
-            role = message.role if message.role in {"assistant", "user"} else "assistant"
-            avatar = _copilot_avatar_uri() if role == "assistant" else "👩‍💻"
-            with st.chat_message(role, avatar=avatar):
-                st.markdown(message.content)
-        chat_input_fn = getattr(st, "chat_input", None)
-        prompt = chat_input_fn("Ask ClipFHIR about this conversion") if callable(chat_input_fn) else None
-        if prompt:
-            agent.chat(prompt)
-            st.session_state["copilot_agent"] = agent
-            _rerun_app()
-    else:
-        st.divider()
-        st.subheader("ClipFHIR Copilot")
-        status_label = "GPT-powered responses enabled" if getattr(agent, "llm", None) else "Offline rule-based responses"
-        st.caption(status_label)
-        for message in chat_messages:
-            st.markdown(f"**{message.role.title()}:** {message.content}")
-        with st.form("copilot_fallback"):
-            prompt = st.text_area("Ask ClipFHIR about this conversion", key="copilot_prompt")
-            submitted = st.form_submit_button("Send")
-        if submitted and prompt.strip():
-            agent.chat(prompt)
-            st.session_state["copilot_agent"] = agent
-            st.session_state["copilot_prompt"] = ""
-            _rerun_app()
+        with button_col:
+            submitted = st.form_submit_button("Send", use_container_width=True)
+    if submitted and prompt_value.strip():
+        agent.chat(prompt_value)
+        st.session_state["copilot_agent"] = agent
+        st.session_state["copilot_prompt"] = ""
+        _rerun_app()
 
 
 st.set_page_config(page_title="HL7 → FHIR R4 Converter", page_icon="🧬", layout="wide")
@@ -374,6 +384,7 @@ if "hl7_text" not in st.session_state:
         st.session_state.hl7_text = ""
         st.session_state.input_label = "hl7_message"
         st.session_state._last_sample = None
+_init_copilot_if_missing(st.session_state.get("hl7_text", ""))
 
 # Auto-load when sample changes (no upload)
 if sample and st.session_state.get("_last_sample") != sample and up is None:
@@ -382,6 +393,7 @@ if sample and st.session_state.get("_last_sample") != sample and up is None:
         st.session_state.hl7_text = sample_path.read_text(encoding="utf-8")
         st.session_state.input_label = sample
         st.session_state._last_sample = sample
+        _reset_copilot(st.session_state.hl7_text)
     except OSError as exc:
         st.warning(f"Unable to read sample {sample}: {exc}")
 
@@ -391,21 +403,26 @@ if up is not None:
     st.session_state.hl7_text = uploaded_text
     st.session_state.input_label = up.name or "uploaded_message"
     st.session_state._last_sample = None
+    _reset_copilot(st.session_state.hl7_text)
 
 st.title("HL7 v2 ➜ FHIR R4 Converter Demo")
 st.caption("Test data only — no real PHI.")
 
-hl7_text = st.text_area(
-    "HL7 message",
-    value=st.session_state.hl7_text,
-    height=220,
-    key="editor",
-)
-st.session_state.hl7_text = hl7_text
+primary_col, copilot_col = st.columns([3, 2])
+with primary_col:
+    hl7_text = st.text_area(
+        "HL7 message",
+        value=st.session_state.hl7_text,
+        height=220,
+        key="editor",
+    )
+    st.session_state.hl7_text = hl7_text
 
-c1, c2 = st.columns([1, 1])
-convert = _button(c1, "Convert to FHIR", type="primary")
-reset = _button(c2, "Reset editor")
+    c1, c2 = st.columns([1, 1])
+    convert = _button(c1, "Convert to FHIR", type="primary")
+    reset = _button(c2, "Reset editor")
+with copilot_col:
+    copilot_panel = st.container()
 if reset:
     st.session_state.clear()
     _rerun_app()
@@ -599,4 +616,5 @@ if convert:
 
 copilot_agent = st.session_state.get("copilot_agent")
 if copilot_agent:
-    _render_copilot(copilot_agent)
+    with copilot_panel:
+        _render_copilot(copilot_agent)

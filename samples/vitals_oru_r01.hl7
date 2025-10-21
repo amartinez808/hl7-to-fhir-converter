@@ -1,6 +1,12 @@
-MSH|^~\&|MON|HOSP|EHR|HOSP|202510131400||ORU^R01|10008|P|2.3
-PID|1||555555^^^HOSP||White^Susan
-OBR|1||99999|VITALS
-OBX|1|NM|8310-5^Body temperature||37.4|C|36.1-37.2|H||F|||202510131358|
-OBX|2|NM|8480-6^Systolic BP||140|mmHg|90-120|H||F|||202510131358|
-OBX|3|NM|8462-4^Diastolic BP||90|mmHg|60-80|H||F|||202510131358|
+MSH|^~\&|MON|HORIZONRPM|EHR|HORIZON|202510151500||ORU^R01|VIT-10008|P|2.5.1
+PID|1||555555^^^HORIZON^MR||White^Susan^Marie||19761230|F||2106-3^White^CDCREC|456 Oak Ave^^Anytown^CA^12345^USA||(555)555-2323|||M|ENG
+PV1|1|O|HOME^REMOTE^KIT^HORIZON^RPM|||||5678^Taylor^Emily^PA^^^^^NPI||||||||AMB|R
+OBR|1|VIT999|VIT999|8716-3^Vital signs panel^LN|^Routine||202510151455|||5678^Taylor^Emily^PA^^^^^NPI||202510151455|202510151500||||||RPM|F
+OBX|1|NM|8310-5^Body temperature^LN||37.4|Cel|36.1-37.2|H||F|||202510151455|
+OBX|2|NM|8480-6^Systolic blood pressure^LN||140|mmHg|90-120|H||F|||202510151455|
+OBX|3|NM|8462-4^Diastolic blood pressure^LN||90|mmHg|60-80|H||F|||202510151455|
+OBX|4|NM|8867-4^Heart rate^LN||102|/min|60-100|H||F|||202510151455|
+OBX|5|NM|9279-1^Respiratory rate^LN||22|/min|12-20|H||F|||202510151455|
+OBX|6|NM|59408-5^Oxygen saturation in Arterial blood by Pulse oximetry^LN||92|%|95-100|L||F|||202510151455|
+OBX|7|TX|75186-7^Patient position^LN||Sitting at rest|||N|||F|||202510151455|
+NTE|1|L|Patient reported mild dizziness when standing quickly.
