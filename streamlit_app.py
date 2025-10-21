@@ -172,6 +172,7 @@ def _init_copilot_if_missing(seed_text: str | None) -> None:
 
 def _reset_copilot(seed_text: str | None) -> None:
     st.session_state["copilot_agent"] = _new_copilot_agent(seed_text)
+    st.session_state.pop("copilot_prompt", None)
 
 
 _COPILOT_SVG = """
@@ -326,7 +327,7 @@ def _render_copilot(agent: ConversionCopilot):
     )
     submitted = False
     prompt_value = ""
-    with st.form("copilot_panel_form", clear_on_submit=False):
+    with st.form("copilot_panel_form", clear_on_submit=True):
         input_col, button_col = st.columns([4, 1])
         with input_col:
             prompt_value = st.text_input(
@@ -340,7 +341,6 @@ def _render_copilot(agent: ConversionCopilot):
     if submitted and prompt_value.strip():
         agent.chat(prompt_value)
         st.session_state["copilot_agent"] = agent
-        st.session_state["copilot_prompt"] = ""
         _rerun_app()
 
 
@@ -350,12 +350,201 @@ st.set_page_config(page_title="HL7 → FHIR R4 Converter", page_icon="🧬", lay
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
     :root, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] * {
         font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        color: #172140;
     }
-    [data-testid="stMetricLabel"], [data-testid="stHeader"] h1 {
+    [data-testid="stAppViewContainer"] {
+        background: radial-gradient(circle at 0% 0%, rgba(139, 163, 255, 0.14), transparent 35%),
+                    radial-gradient(circle at 100% 0%, rgba(143, 227, 255, 0.16), transparent 40%),
+                    linear-gradient(180deg, #f5f7ff 0%, #f9fbff 100%);
+        padding-top: 1.5rem;
+    }
+    [data-testid="stSidebar"] {
+        background: rgba(255, 255, 255, 0.72);
+        backdrop-filter: blur(14px);
+        border-right: 1px solid rgba(109, 140, 251, 0.18);
+    }
+    .page-hero {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 1.1rem 1.35rem;
+        margin-bottom: 1.25rem;
+        border-radius: 22px;
+        background: linear-gradient(135deg, rgba(109, 140, 251, 0.14), rgba(143, 227, 255, 0.18));
+        border: 1px solid rgba(109, 140, 251, 0.18);
+        box-shadow: 0 18px 38px rgba(32, 56, 117, 0.08);
+    }
+    .page-hero .hero-icon {
+        font-size: 2.2rem;
+    }
+    .page-hero h1 {
+        font-size: 1.9rem;
+        font-weight: 700;
+        margin: 0;
+        color: #101a39;
+    }
+    .page-hero p {
+        margin: 0.25rem 0 0;
+        color: rgba(16, 26, 57, 0.72);
+        font-size: 0.95rem;
+    }
+    .card {
+        background: rgba(255, 255, 255, 0.92);
+        border-radius: 20px;
+        padding: 1.35rem 1.5rem;
+        border: 1px solid rgba(109, 140, 251, 0.12);
+        box-shadow: 0 26px 48px rgba(30, 54, 110, 0.12);
+        backdrop-filter: blur(12px);
+        margin-bottom: 1.35rem;
+    }
+    .card h3 {
+        margin-top: 0;
+        margin-bottom: 0.35rem;
+        font-weight: 700;
+        color: #111a35;
+    }
+    .card p {
+        color: rgba(20, 32, 70, 0.66);
+        margin-bottom: 0.9rem;
+        font-size: 0.92rem;
+    }
+    .card-eyebrow {
+        font-size: 0.78rem;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: rgba(37, 55, 113, 0.68);
         font-weight: 600;
+        display: inline-block;
+        margin-bottom: 0.35rem;
+    }
+    .stTextArea textarea {
+        font-family: 'JetBrains Mono', 'Menlo', 'SFMono-Regular', monospace;
+        font-size: 0.92rem;
+        line-height: 1.45rem;
+        border-radius: 14px;
+        border: 1px solid rgba(109, 140, 251, 0.28);
+        background: rgba(18, 35, 80, 0.05);
+        color: #0f1a37;
+        padding: 1rem;
+        min-height: 220px;
+    }
+    .stTextArea textarea:focus {
+        border-color: rgba(109, 140, 251, 0.55);
+        box-shadow: 0 0 0 3px rgba(109, 140, 251, 0.25);
+    }
+    .action-row button[kind="primary"] {
+        background: linear-gradient(135deg, #6d8cfb, #8fe3ff);
+        border: none;
+        color: #0d1330;
+        font-weight: 600;
+        box-shadow: 0 16px 28px rgba(109, 140, 251, 0.32);
+    }
+    .action-row {
+        margin-top: 0.85rem;
+    }
+    .action-row button:not([kind="primary"]) {
+        background: rgba(17, 26, 57, 0.06);
+        color: #112045;
+        border: 1px solid rgba(17, 26, 57, 0.12);
+    }
+    .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.6rem;
+        margin: 1rem 0 0.8rem;
+    }
+    .pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        padding: 0.44rem 0.75rem;
+        border-radius: 999px;
+        background: rgba(109, 140, 251, 0.12);
+        border: 1px solid rgba(109, 140, 251, 0.2);
+        color: #1a2f66;
+        font-size: 0.85rem;
+        font-weight: 600;
+    }
+    .pill strong {
+        font-size: 0.88rem;
+        color: #0c1540;
+    }
+    div[data-baseweb="tab-list"] button {
+        border-radius: 999px !important;
+        padding: 0.45rem 1.1rem !important;
+        margin-right: 0.5rem !important;
+        color: rgba(16, 26, 57, 0.6) !important;
+        font-weight: 600 !important;
+    }
+    div[data-baseweb="tab-list"] button[aria-selected="true"] {
+        background: linear-gradient(135deg, rgba(109, 140, 251, 0.24), rgba(143, 227, 255, 0.32)) !important;
+        color: #0f1930 !important;
+    }
+    .metric-card {
+        border-radius: 16px;
+        padding: 0.95rem 1.05rem;
+        border: 1px solid rgba(109, 140, 251, 0.18);
+        background: rgba(255, 255, 255, 0.82);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+    }
+    .metric-card h4 {
+        margin: 0;
+        font-size: 0.78rem;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(16, 26, 57, 0.62);
+    }
+    .metric-card span {
+        display: block;
+        font-size: 1.4rem;
+        font-weight: 700;
+        color: #101a39;
+        margin-top: 0.3rem;
+    }
+    .card-footnote {
+        margin-top: 0.9rem;
+        font-size: 0.82rem;
+        color: rgba(16, 26, 57, 0.55);
+    }
+    .card-footnote strong {
+        color: #0f1a37;
+    }
+    .section-divider {
+        border: none;
+        border-top: 1px solid rgba(16, 26, 57, 0.08);
+        margin: 1.35rem 0;
+    }
+    .stDownloadButton button {
+        width: 100%;
+        border-radius: 12px;
+        font-weight: 600;
+        background: rgba(109, 140, 251, 0.14);
+        color: #0f1a37;
+        border: 1px solid rgba(109, 140, 251, 0.24);
+    }
+    .stTable {
+        border-radius: 14px;
+        overflow: hidden;
+    }
+    .stTable [data-testid="stTable"] {
+        background: transparent;
+    }
+    .empty-state {
+        padding: 1.05rem 1.2rem;
+        border-radius: 16px;
+        border: 1px dashed rgba(109, 140, 251, 0.28);
+        background: rgba(109, 140, 251, 0.1);
+        color: rgba(16, 26, 57, 0.68);
+        font-size: 0.95rem;
+    }
+    .conversion-summary {
+        margin: 0.35rem 0 1rem;
+        color: rgba(16, 26, 57, 0.62);
+        font-size: 0.95rem;
+        font-weight: 500;
     }
     </style>
     """,
@@ -405,24 +594,53 @@ if up is not None:
     st.session_state._last_sample = None
     _reset_copilot(st.session_state.hl7_text)
 
-st.title("HL7 v2 ➜ FHIR R4 Converter Demo")
-st.caption("Test data only — no real PHI.")
+st.markdown(
+    """
+    <div class="page-hero">
+        <span class="hero-icon">🧬</span>
+        <div>
+            <h1>HL7 → FHIR R4 Converter</h1>
+            <p>Smarter demo data with instant bundle insights. Test data only — no real PHI.</p>
+        </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 primary_col, copilot_col = st.columns([3, 2])
 with primary_col:
+    st.markdown('<div class="card card-editor">', unsafe_allow_html=True)
+    st.markdown("<span class='card-eyebrow'>Message</span>", unsafe_allow_html=True)
+    st.markdown("<h3>HL7 payload</h3>", unsafe_allow_html=True)
+    st.markdown(
+        "<p>Paste or tweak an HL7 v2 message and convert it into a rich FHIR bundle in seconds.</p>",
+        unsafe_allow_html=True,
+    )
     hl7_text = st.text_area(
         "HL7 message",
         value=st.session_state.hl7_text,
-        height=220,
+        height=260,
         key="editor",
+        label_visibility="collapsed",
+        placeholder="MSH|^~\\&|ADT|HORIZON|EHR|HORIZON|202510131005||ADT^A01|A01-10001|P|2.5.1",
     )
     st.session_state.hl7_text = hl7_text
 
+    st.markdown('<div class="action-row">', unsafe_allow_html=True)
     c1, c2 = st.columns([1, 1])
     convert = _button(c1, "Convert to FHIR", type="primary")
     reset = _button(c2, "Reset editor")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    current_label = html.escape(st.session_state.get("input_label", "hl7_message"))
+    st.markdown(
+        f"<div class='card-footnote'>Source: <strong>{current_label}</strong></div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
 with copilot_col:
     copilot_panel = st.container()
+result_container = st.container()
 if reset:
     st.session_state.clear()
     _rerun_app()
@@ -479,140 +697,200 @@ if convert:
             )
             normalized = _normalize_result(result)
             pairs = _pairs_from_result(normalized)
-            if not pairs:
-                st.info("No FHIR resources were produced from this message.")
-            else:
-                total = len(pairs)
-                by_type: dict[str, int] = {}
-                for resource_type, _ in pairs:
-                    by_type[resource_type] = by_type.get(resource_type, 0) + 1
+            with result_container:
+                st.markdown('<div class="card card-results">', unsafe_allow_html=True)
+                st.markdown("<span class='card-eyebrow'>Conversion</span>", unsafe_allow_html=True)
+                st.markdown("<h3>FHIR bundle preview</h3>", unsafe_allow_html=True)
 
-                toast_fn = getattr(st, "toast", None)
-                summary_message = f"Converted ✅ {total} resources across {len(by_type)} types"
-                if callable(toast_fn):
-                    toast_fn(summary_message)
+                if not pairs:
+                    st.markdown(
+                        "<div class='empty-state'>No FHIR resources were produced from this message.</div>",
+                        unsafe_allow_html=True,
+                    )
                 else:
-                    st.success(summary_message)
+                    total = len(pairs)
+                    by_type: dict[str, int] = {}
+                    for resource_type, _ in pairs:
+                        by_type[resource_type] = by_type.get(resource_type, 0) + 1
 
-                chips = " ".join(f"`{rtype}` **{count}**" for rtype, count in sorted(by_type.items()))
-                st.markdown(chips or "_No resources produced_")
+                    toast_fn = getattr(st, "toast", None)
+                    summary_message = f"Converted ✅ {total} resources across {len(by_type)} types"
+                    if callable(toast_fn):
+                        toast_fn(summary_message)
+                    else:
+                        st.markdown(f"<div class='conversion-summary'>{summary_message}</div>", unsafe_allow_html=True)
 
-                resources_only = [resource for _, resource in pairs]
-                tab_json, tab_res, tab_quality = st.tabs(["FHIR JSON", "Resources", "Quality"])
-
-                with tab_json:
-                    if resources_only:
-                        st.json(resources_only)
-                        json_payload = json.dumps(resources_only, default=_json_ready, ensure_ascii=False, indent=2)
-                        st.download_button(
-                            "Download JSON",
-                            json_payload,
-                            f"{Path(st.session_state.get('input_label', 'hl7_message')).stem}_bundle.json",
-                            "application/json",
+                    quality_rows: list[dict[str, Any]] = []
+                    anomalies_present: dict[str, list[str]] = {}
+                    completeness_values: list[float] = []
+                    for resource_type, resource in pairs:
+                        completeness = completeness_score(resource_type, resource)
+                        if completeness is not None:
+                            completeness_values.append(float(completeness))
+                        anomalies = detect_anomalies(resource_type, resource)
+                        if anomalies:
+                            key = resource.get("id") or resource_type
+                            anomalies_present[key] = anomalies
+                        quality_rows.append(
+                            {
+                                "resourceType": resource_type,
+                                "id": resource.get("id", ""),
+                                "completeness": completeness,
+                                "anomalies": "; ".join(anomalies),
+                            }
                         )
-                        st.download_button(
-                            "Download NDJSON",
-                            _ndjson(pairs),
-                            f"{Path(st.session_state.get('input_label', 'hl7_message')).stem}_bundle.ndjson",
-                            "application/x-ndjson",
+                    avg_completeness = (
+                        sum(completeness_values) / len(completeness_values) if completeness_values else None
+                    )
+
+                    metrics = [
+                        ("FHIR resources", str(total)),
+                        ("Resource types", str(len(by_type))),
+                        (
+                            "Avg completeness",
+                            f"{avg_completeness:.0%}" if avg_completeness is not None else "—",
+                        ),
+                        ("Elapsed", f"{elapsed:.2f}s" if elapsed else "—"),
+                    ]
+                    metric_cols = st.columns(len(metrics))
+                    for col, (label, value) in zip(metric_cols, metrics):
+                        col.markdown(
+                            f"<div class='metric-card'><h4>{html.escape(label)}</h4><span>{html.escape(value)}</span></div>",
+                            unsafe_allow_html=True,
                         )
-                    else:
-                        st.info("No FHIR resources available.")
 
-                with tab_res:
-                    if not resources_only:
-                        st.info("No FHIR resources available.")
-                    else:
-                        for resource_type, resource in pairs:
-                            label = f"{resource_type} — {resource.get('id', 'no-id')}"
-                            with st.expander(label, expanded=False):
-                                st.json(resource)
+                    chips_html = "".join(
+                        f"<span class='pill'><span>{html.escape(rtype)}</span><strong>{count}</strong></span>"
+                        for rtype, count in sorted(by_type.items())
+                    )
+                    if chips_html:
+                        st.markdown(f"<div class='pill-row'>{chips_html}</div>", unsafe_allow_html=True)
 
-                with tab_quality:
-                    if not resources_only:
-                        st.info("No FHIR resources available.")
-                    else:
-                        rows = []
-                        anomalies_present: dict[str, list[str]] = {}
-                        for resource_type, resource in pairs:
-                            anomalies = detect_anomalies(resource_type, resource)
-                            if anomalies:
-                                key = resource.get("id") or resource_type
-                                anomalies_present[key] = anomalies
-                            rows.append(
-                                {
-                                    "resourceType": resource_type,
-                                    "id": resource.get("id", ""),
-                                    "completeness": completeness_score(resource_type, resource),
-                                    "anomalies": "; ".join(anomalies),
-                                }
+                    resources_only = [resource for _, resource in pairs]
+                    st.markdown("<hr class='section-divider' />", unsafe_allow_html=True)
+                    tab_json, tab_res, tab_quality = st.tabs(["FHIR JSON", "Resources", "Quality"])
+
+                    with tab_json:
+                        if resources_only:
+                            st.json(resources_only)
+                            json_payload = json.dumps(
+                                resources_only, default=_json_ready, ensure_ascii=False, indent=2
                             )
-                        _dataframe(rows, use_container_width=True)
-                        if anomalies_present:
-                            for key, messages in anomalies_present.items():
-                                with st.expander(f"Anomalies for {key}", expanded=False):
-                                    for message in messages:
-                                        st.write(f"- {message}")
+                            base_name = Path(st.session_state.get("input_label", "hl7_message")).stem
+                            st.download_button(
+                                "Download JSON",
+                                json_payload,
+                                f"{base_name}_bundle.json",
+                                "application/json",
+                                use_container_width=True,
+                            )
+                            st.download_button(
+                                "Download NDJSON",
+                                _ndjson(pairs),
+                                f"{base_name}_bundle.ndjson",
+                                "application/x-ndjson",
+                                use_container_width=True,
+                            )
+                        else:
+                            st.markdown(
+                                "<div class='empty-state'>No FHIR resources available.</div>",
+                                unsafe_allow_html=True,
+                            )
 
-                st.divider()
-                toggle_callable = getattr(st, "toggle", None)
-                if callable(toggle_callable):
-                    redact = toggle_callable("De-identify PHI (mask names/IDs)")
-                else:
-                    redact = st.checkbox("De-identify PHI (mask names/IDs)", value=False)
-                safe_pairs = [
-                    (resource_type, mask_patient(resource) if redact else resource)
-                    for resource_type, resource in pairs
-                ]
+                    with tab_res:
+                        if not resources_only:
+                            st.markdown(
+                                "<div class='empty-state'>No FHIR resources available.</div>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            grouped: dict[str, list[dict]] = {}
+                            for rtype, resource in pairs:
+                                grouped.setdefault(rtype, []).append(resource)
+                            for rtype, resources in sorted(grouped.items()):
+                                st.markdown(f"**{html.escape(rtype)}** ({len(resources)})")
+                                for resource in resources:
+                                    rid = resource.get("id") or "no-id"
+                                    label = f"{rtype} — {rid}"
+                                    with st.expander(label, expanded=False):
+                                        st.json(resource)
 
-                st.subheader("Send to FHIR (optional)")
-                default_base = os.getenv("FHIR_BASE_URL", "http://localhost:8080/fhir")
-                base = st.text_input("FHIR base URL", value=default_base)
-                token_default = os.getenv("AUTH_TOKEN", "")
-                token = st.text_input("Bearer token (optional)", type="password", value=token_default)
+                    with tab_quality:
+                        if not resources_only:
+                            st.markdown(
+                                "<div class='empty-state'>No FHIR resources available.</div>",
+                                unsafe_allow_html=True,
+                            )
+                        else:
+                            _dataframe(quality_rows, use_container_width=True)
+                            if anomalies_present:
+                                for key, messages in anomalies_present.items():
+                                    with st.expander(f"Anomalies — {key}", expanded=False):
+                                        for message in messages:
+                                            st.write(f"- {message}")
 
-                if st.button("POST all resources"):
-                    if not safe_pairs:
-                        st.info("No resources to send.")
+                    st.markdown("<hr class='section-divider' />", unsafe_allow_html=True)
+                    toggle_callable = getattr(st, "toggle", None)
+                    if callable(toggle_callable):
+                        redact = toggle_callable("De-identify PHI (mask names/IDs)")
                     else:
-                        client = FHIRClient(base, token or None)
-                        posted: list[dict[str, Any]] = []
-                        errors: list[str] = []
-                        for resource_type, resource in safe_pairs:
-                            try:
-                                response = client.create(resource_type, resource)
-                                entry: dict[str, Any] = {"resourceType": resource_type, "status": response.status_code}
+                        redact = st.checkbox("De-identify PHI (mask names/IDs)", value=False)
+                    safe_pairs = [
+                        (resource_type, mask_patient(resource) if redact else resource)
+                        for resource_type, resource in pairs
+                    ]
+
+                    st.markdown("<span class='card-eyebrow'>Share</span>", unsafe_allow_html=True)
+                    st.markdown("<h4>Send resources to a FHIR server</h4>", unsafe_allow_html=True)
+                    default_base = os.getenv("FHIR_BASE_URL", "http://localhost:8080/fhir")
+                    token_default = os.getenv("AUTH_TOKEN", "")
+                    col_base, col_token = st.columns([2, 1])
+                    base = col_base.text_input("FHIR base URL", value=default_base)
+                    token = col_token.text_input("Bearer token (optional)", type="password", value=token_default)
+                    if st.button("POST all resources", use_container_width=True):
+                        if not safe_pairs:
+                            st.info("No resources to send.")
+                        else:
+                            client = FHIRClient(base, token or None)
+                            posted: list[dict[str, Any]] = []
+                            errors: list[str] = []
+                            for resource_type, resource in safe_pairs:
                                 try:
-                                    payload = response.json()
-                                except ValueError:
-                                    payload = {}
-                                resource_id = payload.get("id")
-                                if resource_id:
-                                    entry["id"] = resource_id
-                                audit_event("create", resource_type, resource_id, "streamlit-ui")
-                                posted.append(entry)
-                            except Exception as exc:  # noqa: BLE001
-                                message = f"{resource_type}: {exc}"
-                                errors.append(message)
-                                posted.append({"resourceType": resource_type, "status": "error"})
-                        if errors:
-                            for msg in errors:
-                                st.warning(msg)
-                        st.success("POST complete" if not errors else "POST attempted with warnings")
-                        if posted:
-                            st.table(posted)
+                                    response = client.create(resource_type, resource)
+                                    entry: dict[str, Any] = {"resourceType": resource_type, "status": response.status_code}
+                                    try:
+                                        payload = response.json()
+                                    except ValueError:
+                                        payload = {}
+                                    resource_id = payload.get("id")
+                                    if resource_id:
+                                        entry["id"] = resource_id
+                                    audit_event("create", resource_type, resource_id, "streamlit-ui")
+                                    posted.append(entry)
+                                except Exception as exc:  # noqa: BLE001
+                                    message = f"{resource_type}: {exc}"
+                                    errors.append(message)
+                                    posted.append({"resourceType": resource_type, "status": "error"})
+                            if errors:
+                                for msg in errors:
+                                    st.warning(msg)
+                            st.success("POST complete" if not errors else "POST attempted with warnings")
+                            if posted:
+                                st.table(posted)
 
-                st.divider()
-                st.subheader("Referral Intake Workflow")
-                if st.button("Simulate referral intake workflow"):
-                    patient_resource = next((res for rtype, res in pairs if rtype == "Patient"), None)
-                    if not patient_resource:
-                        st.info("A Patient resource is required to simulate this workflow.")
-                    else:
-                        workflow = build_referral_intake_workflow(None, patient_resource, {"status": "planned"})
-                        context = workflow.run({})
-                        audit_event("workflow", "Patient", patient_resource.get("id"), "streamlit-ui")
-                        st.json(context)
+                    st.markdown("<span class='card-eyebrow'>Automation</span>", unsafe_allow_html=True)
+                    st.markdown("<h4>Referral intake workflow</h4>", unsafe_allow_html=True)
+                    if st.button("Simulate referral intake workflow", use_container_width=True):
+                        patient_resource = next((res for rtype, res in pairs if rtype == "Patient"), None)
+                        if not patient_resource:
+                            st.info("A Patient resource is required to simulate this workflow.")
+                        else:
+                            workflow = build_referral_intake_workflow(None, patient_resource, {"status": "planned"})
+                            context = workflow.run({})
+                            audit_event("workflow", "Patient", patient_resource.get("id"), "streamlit-ui")
+                            st.json(context)
+
+                st.markdown("</div>", unsafe_allow_html=True)
 
 copilot_agent = st.session_state.get("copilot_agent")
 if copilot_agent:
