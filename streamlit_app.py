@@ -1,5 +1,5 @@
 """
-Streamlit interface for the HL7 → FHIR mini-converter.
+Streamlit interface for the HL7 -> FHIR mini-converter.
 
 Run with:
     streamlit run streamlit_app.py
@@ -271,6 +271,21 @@ _COPILOT_STYLE = """
     font-size: 0.94rem;
     line-height: 1.35rem;
 }
+.copilot-bubble__content p {
+    margin: 0;
+}
+.copilot-bubble__content p + p {
+    margin-top: 0.45rem;
+}
+.copilot-bubble__content ul {
+    margin: 0.45rem 0 0 1.05rem;
+    padding: 0;
+    list-style: disc;
+    color: inherit;
+}
+.copilot-bubble__content li {
+    margin-bottom: 0.2rem;
+}
 .copilot-empty {
     padding: 0.75rem;
     color: rgba(44, 56, 92, 0.7);
@@ -286,6 +301,41 @@ def _copilot_avatar_uri() -> str:
     return f"data:image/svg+xml;base64,{encoded}"
 
 
+def _format_message_html(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines()]
+    blocks: list[str] = []
+    list_items: list[str] = []
+
+    def flush_list() -> None:
+        nonlocal list_items
+        if list_items:
+            blocks.append("<ul>" + "".join(list_items) + "</ul>")
+            list_items = []
+
+    for line in lines:
+        if not line:
+            flush_list()
+            continue
+
+        bullet_prefixes = ("•", "-", "*")
+        if line.startswith(bullet_prefixes):
+            stripped = line.lstrip("•-* ").strip()
+            list_items.append(f"<li>{html.escape(stripped)}</li>")
+            continue
+
+        if len(line) > 2 and line[0].isdigit() and line[1] in {".", ")"}:
+            remainder = line.split(" ", 1)
+            stripped = remainder[1].strip() if len(remainder) > 1 else line[2:].strip()
+            list_items.append(f"<li>{html.escape(stripped)}</li>")
+            continue
+
+        flush_list()
+        blocks.append(f"<p>{html.escape(line)}</p>")
+
+    flush_list()
+    return "".join(blocks) or "<p></p>"
+
+
 def _copilot_messages_html(messages: list) -> str:
     if not messages:
         return "<div class='copilot-empty'>Ask me anything about this bundle!</div>"
@@ -293,7 +343,7 @@ def _copilot_messages_html(messages: list) -> str:
     for message in messages:
         role = "assistant" if message.role != "user" else "user"
         role_label = "ClipFHIR" if role == "assistant" else "You"
-        safe_lines = "<br/>".join(html.escape(line) for line in message.content.splitlines())
+        safe_lines = _format_message_html(message.content)
         bubbles.append(
             f"""
             <div class="copilot-bubble copilot-bubble--{role}">
@@ -339,12 +389,12 @@ def _render_copilot(agent: ConversionCopilot):
         with button_col:
             submitted = st.form_submit_button("Send", use_container_width=True)
     if submitted and prompt_value.strip():
-        agent.chat(prompt_value)
+        with st.spinner("ClipFHIR is thinking…"):
+            agent.chat(prompt_value)
         st.session_state["copilot_agent"] = agent
-        _rerun_app()
 
 
-st.set_page_config(page_title="HL7 → FHIR R4 Converter", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="HL7 -> FHIR R4 Converter", page_icon="DNA", layout="wide")
 
 # Inject modern font styling (fallback keeps Streamlit defaults if loading fails)
 st.markdown(
@@ -353,18 +403,76 @@ st.markdown(
     @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
     :root, [data-testid="stAppViewContainer"], [data-testid="stSidebar"] * {
         font-family: 'Manrope', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        color: #172140;
+    }
+    body, :root {
+        color-scheme: light dark;
+    }
+    .app-surface {
+        --surface-bg: radial-gradient(circle at 0% 0%, rgba(139, 163, 255, 0.14), transparent 35%),
+                       radial-gradient(circle at 100% 0%, rgba(143, 227, 255, 0.16), transparent 40%),
+                       linear-gradient(180deg, #f5f7ff 0%, #f9fbff 100%);
+        --surface-color: #172140;
+        --surface-muted: rgba(16, 26, 57, 0.62);
+        --glass-bg: rgba(255, 255, 255, 0.92);
+        --glass-border: rgba(109, 140, 251, 0.18);
+        --glass-shadow: 0 26px 48px rgba(30, 54, 110, 0.12);
+        --hero-gradient: linear-gradient(135deg, rgba(109, 140, 251, 0.14), rgba(143, 227, 255, 0.18));
+        --hero-text: #101a39;
+        --hero-subtext: rgba(16, 26, 57, 0.72);
+        --pill-bg: rgba(109, 140, 251, 0.12);
+        --pill-border: rgba(109, 140, 251, 0.2);
+        --pill-text: #1a2f66;
+        --textarea-bg: rgba(18, 35, 80, 0.05);
+        --textarea-border: rgba(109, 140, 251, 0.28);
+        --textarea-color: #0f1a37;
+        --metric-bg: rgba(255, 255, 255, 0.82);
+        --metric-border: rgba(109, 140, 251, 0.18);
+        --metric-text: #101a39;
+        --divider-color: rgba(16, 26, 57, 0.08);
+        --empty-bg: rgba(109, 140, 251, 0.1);
+        --empty-border: rgba(109, 140, 251, 0.28);
+        --empty-text: rgba(16, 26, 57, 0.68);
+        color: var(--surface-color);
+    }
+    [data-testid="stAppViewContainer"].app-surface-dark {
+        --surface-bg: radial-gradient(circle at 0% 0%, rgba(88, 102, 190, 0.26), transparent 35%),
+                      radial-gradient(circle at 100% 0%, rgba(60, 126, 176, 0.24), transparent 40%),
+                      linear-gradient(180deg, #101732 0%, #0b0e1a 100%);
+        --surface-color: rgba(240, 244, 255, 0.94);
+        --surface-muted: rgba(205, 213, 241, 0.76);
+        --glass-bg: rgba(18, 22, 41, 0.82);
+        --glass-border: rgba(109, 140, 251, 0.32);
+        --glass-shadow: 0 26px 48px rgba(6, 10, 26, 0.45);
+        --hero-gradient: linear-gradient(135deg, rgba(109, 140, 251, 0.18), rgba(143, 227, 255, 0.28));
+        --hero-text: #f4f6ff;
+        --hero-subtext: rgba(220, 230, 255, 0.76);
+        --pill-bg: rgba(109, 140, 251, 0.2);
+        --pill-border: rgba(109, 140, 251, 0.45);
+        --pill-text: rgba(226, 234, 255, 0.94);
+        --textarea-bg: rgba(15, 24, 48, 0.65);
+        --textarea-border: rgba(109, 140, 251, 0.45);
+        --textarea-color: rgba(232, 237, 255, 0.94);
+        --metric-bg: rgba(20, 27, 52, 0.92);
+        --metric-border: rgba(109, 140, 251, 0.32);
+        --metric-text: rgba(234, 239, 255, 0.98);
+        --divider-color: rgba(132, 144, 198, 0.18);
+        --empty-bg: rgba(109, 140, 251, 0.18);
+        --empty-border: rgba(109, 140, 251, 0.45);
+        --empty-text: rgba(215, 224, 255, 0.82);
     }
     [data-testid="stAppViewContainer"] {
-        background: radial-gradient(circle at 0% 0%, rgba(139, 163, 255, 0.14), transparent 35%),
-                    radial-gradient(circle at 100% 0%, rgba(143, 227, 255, 0.16), transparent 40%),
-                    linear-gradient(180deg, #f5f7ff 0%, #f9fbff 100%);
+        background: var(--surface-bg);
         padding-top: 1.5rem;
+        color: var(--surface-color);
+    }
+    [data-testid="stAppViewContainer"].app-surface-dark {
+        color: var(--surface-color);
     }
     [data-testid="stSidebar"] {
-        background: rgba(255, 255, 255, 0.72);
-        backdrop-filter: blur(14px);
-        border-right: 1px solid rgba(109, 140, 251, 0.18);
+        background: var(--glass-bg);
+        backdrop-filter: blur(16px);
+        border-right: 1px solid var(--glass-border);
+        color: var(--surface-color);
     }
     .page-hero {
         display: flex;
@@ -373,9 +481,10 @@ st.markdown(
         padding: 1.1rem 1.35rem;
         margin-bottom: 1.25rem;
         border-radius: 22px;
-        background: linear-gradient(135deg, rgba(109, 140, 251, 0.14), rgba(143, 227, 255, 0.18));
-        border: 1px solid rgba(109, 140, 251, 0.18);
-        box-shadow: 0 18px 38px rgba(32, 56, 117, 0.08);
+        background: var(--hero-gradient);
+        border: 1px solid var(--glass-border);
+        box-shadow: var(--glass-shadow);
+        color: var(--surface-color);
     }
     .page-hero .hero-icon {
         font-size: 2.2rem;
@@ -384,30 +493,31 @@ st.markdown(
         font-size: 1.9rem;
         font-weight: 700;
         margin: 0;
-        color: #101a39;
+        color: var(--hero-text);
     }
     .page-hero p {
         margin: 0.25rem 0 0;
-        color: rgba(16, 26, 57, 0.72);
+        color: var(--hero-subtext);
         font-size: 0.95rem;
     }
     .card {
-        background: rgba(255, 255, 255, 0.92);
+        background: var(--glass-bg);
         border-radius: 20px;
         padding: 1.35rem 1.5rem;
-        border: 1px solid rgba(109, 140, 251, 0.12);
-        box-shadow: 0 26px 48px rgba(30, 54, 110, 0.12);
-        backdrop-filter: blur(12px);
+        border: 1px solid var(--glass-border);
+        box-shadow: var(--glass-shadow);
+        backdrop-filter: blur(14px);
         margin-bottom: 1.35rem;
+        color: var(--surface-color);
     }
     .card h3 {
         margin-top: 0;
         margin-bottom: 0.35rem;
         font-weight: 700;
-        color: #111a35;
+        color: var(--hero-text);
     }
     .card p {
-        color: rgba(20, 32, 70, 0.66);
+        color: var(--surface-muted);
         margin-bottom: 0.9rem;
         font-size: 0.92rem;
     }
@@ -415,7 +525,8 @@ st.markdown(
         font-size: 0.78rem;
         letter-spacing: 0.14em;
         text-transform: uppercase;
-        color: rgba(37, 55, 113, 0.68);
+        color: var(--surface-muted);
+        opacity: 0.72;
         font-weight: 600;
         display: inline-block;
         margin-bottom: 0.35rem;
@@ -425,15 +536,18 @@ st.markdown(
         font-size: 0.92rem;
         line-height: 1.45rem;
         border-radius: 14px;
-        border: 1px solid rgba(109, 140, 251, 0.28);
-        background: rgba(18, 35, 80, 0.05);
-        color: #0f1a37;
+        border: 1px solid var(--textarea-border);
+        background: var(--textarea-bg);
+        color: var(--textarea-color);
         padding: 1rem;
         min-height: 220px;
     }
     .stTextArea textarea:focus {
-        border-color: rgba(109, 140, 251, 0.55);
-        box-shadow: 0 0 0 3px rgba(109, 140, 251, 0.25);
+        border-color: rgba(109, 140, 251, 0.65);
+        box-shadow: 0 0 0 3px rgba(109, 140, 251, 0.28);
+    }
+    .action-row {
+        margin-top: 0.85rem;
     }
     .action-row button[kind="primary"] {
         background: linear-gradient(135deg, #6d8cfb, #8fe3ff);
@@ -442,13 +556,18 @@ st.markdown(
         font-weight: 600;
         box-shadow: 0 16px 28px rgba(109, 140, 251, 0.32);
     }
-    .action-row {
-        margin-top: 0.85rem;
+    [data-testid="stAppViewContainer"].app-surface-dark .action-row button[kind="primary"] {
+        color: #081122;
     }
     .action-row button:not([kind="primary"]) {
         background: rgba(17, 26, 57, 0.06);
-        color: #112045;
+        color: var(--surface-color);
         border: 1px solid rgba(17, 26, 57, 0.12);
+    }
+    [data-testid="stAppViewContainer"].app-surface-dark .action-row button:not([kind="primary"]) {
+        background: rgba(226, 236, 255, 0.04);
+        border-color: rgba(226, 236, 255, 0.14);
+        color: var(--surface-color);
     }
     .pill-row {
         display: flex;
@@ -462,59 +581,63 @@ st.markdown(
         gap: 0.45rem;
         padding: 0.44rem 0.75rem;
         border-radius: 999px;
-        background: rgba(109, 140, 251, 0.12);
-        border: 1px solid rgba(109, 140, 251, 0.2);
-        color: #1a2f66;
+        background: var(--pill-bg);
+        border: 1px solid var(--pill-border);
+        color: var(--pill-text);
         font-size: 0.85rem;
         font-weight: 600;
     }
     .pill strong {
         font-size: 0.88rem;
-        color: #0c1540;
+        color: inherit;
     }
     div[data-baseweb="tab-list"] button {
         border-radius: 999px !important;
         padding: 0.45rem 1.1rem !important;
         margin-right: 0.5rem !important;
-        color: rgba(16, 26, 57, 0.6) !important;
+        color: var(--surface-muted) !important;
         font-weight: 600 !important;
     }
     div[data-baseweb="tab-list"] button[aria-selected="true"] {
         background: linear-gradient(135deg, rgba(109, 140, 251, 0.24), rgba(143, 227, 255, 0.32)) !important;
-        color: #0f1930 !important;
+        color: var(--surface-color) !important;
+    }
+    [data-testid="stAppViewContainer"].app-surface-dark div[data-baseweb="tab-list"] button[aria-selected="true"] {
+        background: linear-gradient(135deg, rgba(109, 140, 251, 0.32), rgba(143, 227, 255, 0.42)) !important;
     }
     .metric-card {
         border-radius: 16px;
         padding: 0.95rem 1.05rem;
-        border: 1px solid rgba(109, 140, 251, 0.18);
-        background: rgba(255, 255, 255, 0.82);
-        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+        border: 1px solid var(--metric-border);
+        background: var(--metric-bg);
+        box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
     }
     .metric-card h4 {
         margin: 0;
         font-size: 0.78rem;
         letter-spacing: 0.08em;
         text-transform: uppercase;
-        color: rgba(16, 26, 57, 0.62);
+        color: var(--surface-muted);
+        opacity: 0.78;
     }
     .metric-card span {
         display: block;
         font-size: 1.4rem;
         font-weight: 700;
-        color: #101a39;
+        color: var(--metric-text);
         margin-top: 0.3rem;
     }
     .card-footnote {
         margin-top: 0.9rem;
         font-size: 0.82rem;
-        color: rgba(16, 26, 57, 0.55);
+        color: var(--surface-muted);
     }
     .card-footnote strong {
-        color: #0f1a37;
+        color: var(--hero-text);
     }
     .section-divider {
         border: none;
-        border-top: 1px solid rgba(16, 26, 57, 0.08);
+        border-top: 1px solid var(--divider-color);
         margin: 1.35rem 0;
     }
     .stDownloadButton button {
@@ -522,8 +645,13 @@ st.markdown(
         border-radius: 12px;
         font-weight: 600;
         background: rgba(109, 140, 251, 0.14);
-        color: #0f1a37;
+        color: var(--surface-color);
         border: 1px solid rgba(109, 140, 251, 0.24);
+    }
+    [data-testid="stAppViewContainer"].app-surface-dark .stDownloadButton button {
+        background: rgba(109, 140, 251, 0.24);
+        color: rgba(15, 20, 38, 0.92);
+        border-color: rgba(109, 140, 251, 0.45);
     }
     .stTable {
         border-radius: 14px;
@@ -531,22 +659,48 @@ st.markdown(
     }
     .stTable [data-testid="stTable"] {
         background: transparent;
+        color: var(--surface-color);
     }
     .empty-state {
         padding: 1.05rem 1.2rem;
         border-radius: 16px;
-        border: 1px dashed rgba(109, 140, 251, 0.28);
-        background: rgba(109, 140, 251, 0.1);
-        color: rgba(16, 26, 57, 0.68);
+        border: 1px dashed var(--empty-border);
+        background: var(--empty-bg);
+        color: var(--empty-text);
         font-size: 0.95rem;
     }
     .conversion-summary {
         margin: 0.35rem 0 1rem;
-        color: rgba(16, 26, 57, 0.62);
+        color: var(--surface-muted);
         font-size: 0.95rem;
         font-weight: 500;
     }
     </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <script>
+    const applySurfaceTheme = () => {
+        const parentDoc = window.parent.document;
+        const root = parentDoc.querySelector('[data-testid="stAppViewContainer"]');
+        if (!root) {
+            return;
+        }
+        root.classList.add('app-surface');
+        const theme = parentDoc.body.getAttribute('data-theme');
+        if (theme === 'dark') {
+            root.classList.add('app-surface-dark');
+        } else {
+            root.classList.remove('app-surface-dark');
+        }
+    };
+    applySurfaceTheme();
+    const themeObserver = new MutationObserver(applySurfaceTheme);
+    themeObserver.observe(window.parent.document.body, { attributes: true, attributeFilter: ['data-theme'] });
+    </script>
     """,
     unsafe_allow_html=True,
 )
@@ -597,10 +751,10 @@ if up is not None:
 st.markdown(
     """
     <div class="page-hero">
-        <span class="hero-icon">🧬</span>
+        <span class="hero-icon">DNA</span>
         <div>
-            <h1>HL7 → FHIR R4 Converter</h1>
-            <p>Smarter demo data with instant bundle insights. Test data only — no real PHI.</p>
+            <h1>HL7 -> FHIR R4 Converter</h1>
+            <p>Smarter demo data with instant bundle insights. Test data only -- no real PHI.</p>
         </div>
     </div>
     """,
@@ -748,9 +902,9 @@ if convert:
                         ("Resource types", str(len(by_type))),
                         (
                             "Avg completeness",
-                            f"{avg_completeness:.0%}" if avg_completeness is not None else "—",
+                            f"{avg_completeness:.0%}" if avg_completeness is not None else "--",
                         ),
-                        ("Elapsed", f"{elapsed:.2f}s" if elapsed else "—"),
+                        ("Elapsed", f"{elapsed:.2f}s" if elapsed else "--"),
                     ]
                     metric_cols = st.columns(len(metrics))
                     for col, (label, value) in zip(metric_cols, metrics):
@@ -811,7 +965,7 @@ if convert:
                                 st.markdown(f"**{html.escape(rtype)}** ({len(resources)})")
                                 for resource in resources:
                                     rid = resource.get("id") or "no-id"
-                                    label = f"{rtype} — {rid}"
+                                    label = f"{rtype} -- {rid}"
                                     with st.expander(label, expanded=False):
                                         st.json(resource)
 
@@ -825,7 +979,7 @@ if convert:
                             _dataframe(quality_rows, use_container_width=True)
                             if anomalies_present:
                                 for key, messages in anomalies_present.items():
-                                    with st.expander(f"Anomalies — {key}", expanded=False):
+                                    with st.expander(f"Anomalies -- {key}", expanded=False):
                                         for message in messages:
                                             st.write(f"- {message}")
 
