@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Streamlit interface for the HL7 -> FHIR mini-converter.
 
@@ -394,7 +395,7 @@ def _render_copilot(agent: ConversionCopilot):
         st.session_state["copilot_agent"] = agent
 
 
-st.set_page_config(page_title="HL7 -> FHIR R4 Converter", page_icon="DNA", layout="wide")
+st.set_page_config(page_title="HL7 → FHIR R4 Converter", page_icon="🧬", layout="wide")
 
 # Inject modern font styling (fallback keeps Streamlit defaults if loading fails)
 st.markdown(
@@ -751,9 +752,9 @@ if up is not None:
 st.markdown(
     """
     <div class="page-hero">
-        <span class="hero-icon">DNA</span>
+        <span class="hero-icon">🧬</span>
         <div>
-            <h1>HL7 -> FHIR R4 Converter</h1>
+            <h1>HL7 → FHIR R4 Converter</h1>
             <p>Smarter demo data with instant bundle insights. Test data only -- no real PHI.</p>
         </div>
     </div>
