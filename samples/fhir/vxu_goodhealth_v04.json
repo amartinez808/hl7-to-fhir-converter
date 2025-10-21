@@ -1,0 +1,73 @@
+{
+  "resourceType": "Bundle",
+  "type": "collection",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-555222",
+        "name": [
+          {
+            "family": "Jones",
+            "given": [
+              "Caleb",
+              "R"
+            ]
+          }
+        ],
+        "birthDate": "2017-03-15",
+        "gender": "male"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "imm-IMM123",
+        "status": "completed",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/cvx",
+              "code": "207",
+              "display": "COVID-19 mRNA vaccine"
+            }
+          ]
+        },
+        "patient": {
+          "reference": "Patient/pat-555222"
+        },
+        "occurrenceDateTime": "2024-09-15",
+        "primarySource": true,
+        "doseQuantity": {
+          "value": 0.5,
+          "unit": "mL"
+        },
+        "site": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-ActSite",
+              "code": "LD",
+              "display": "Left deltoid"
+            }
+          ]
+        },
+        "route": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/v3-RouteOfAdministration",
+              "code": "IM",
+              "display": "Intramuscular injection"
+            }
+          ]
+        },
+        "performer": [
+          {
+            "actor": {
+              "display": "Dr. Lena Shaw"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

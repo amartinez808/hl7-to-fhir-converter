@@ -1,0 +1,8 @@
+MSH|^~\&|IMMREG|GOODHEALTH|PHR|GOODHEALTH|202510101015||VXU^V04|VXU-10001|P|2.5.1
+PID|1||555222^^^GOODHEALTH^MR||Jones^Caleb^R||20170315|M|||222 Elm St^^Springfield^IL^62704^USA||(217)555-7789||EN
+PD1|||2001^Community Clinic^L
+NK1|1|Jones^Amanda|MTH||(217)555-8890
+ORC|RE|IMM123|IMM123|IMM123|SC||202510091400|7531^Shaw^Lena^MD^^^^^NPI
+RXA|0|1|20240915||207^COVID-19 mRNA vaccine^CVX|0.5|mL||00||7531^Shaw^Lena^MD^^^^^NPI|Clinic^Main^Suite200^Springfield^IL^62704^USA|CP|A
+RXR|IM|Left deltoid
+OBX|1|CE|59784-9^Vaccine funding program eligibility category^LN||V02^VFC eligible-Medicaid^HL70064

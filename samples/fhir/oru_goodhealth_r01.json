@@ -1,0 +1,114 @@
+{
+  "resourceType": "Bundle",
+  "type": "collection",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-789101",
+        "name": [
+          {
+            "family": "Smith",
+            "given": [
+              "Jane",
+              "M"
+            ]
+          }
+        ],
+        "gender": "female",
+        "birthDate": "1988-12-20"
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "DiagnosticReport",
+        "id": "dr-LAB12345",
+        "status": "final",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "57021-8",
+              "display": "CBC panel"
+            }
+          ],
+          "text": "CBC panel"
+        },
+        "subject": {
+          "reference": "Patient/pat-789101"
+        },
+        "result": [
+          {
+            "reference": "Observation/obs-wbc"
+          },
+          {
+            "reference": "Observation/obs-hgb"
+          },
+          {
+            "reference": "Observation/obs-plt"
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "obs-wbc",
+        "status": "final",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "6690-2",
+              "display": "Leukocytes [#/volume] in Blood"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 7.8,
+          "unit": "10*3/uL"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "obs-hgb",
+        "status": "final",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "718-7",
+              "display": "Hemoglobin [Mass/volume] in Blood"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 13.5,
+          "unit": "g/dL"
+        }
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Observation",
+        "id": "obs-plt",
+        "status": "final",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "777-3",
+              "display": "Platelets [#/volume] in Blood"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 210,
+          "unit": "10*3/uL"
+        }
+      }
+    }
+  ]
+}

@@ -6,6 +6,7 @@ build/
 .pytest_cache/
 .vscode/
 *.json
+!samples/fhir/*.json
 output/
 streamlit.log
 .streamlit/secrets.toml

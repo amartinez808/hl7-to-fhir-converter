@@ -15,14 +15,18 @@ import logging
 import os
 import sys
 import time
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Optional
 from functools import lru_cache
 
 import streamlit as st
+
+from hl7apy.core import Segment
+from hl7apy.parser import parse_message
 
 from app.copilot import ConversionCopilot, ConversionContext
 from app.adapters.fhir_client import FHIRClient
@@ -76,6 +80,12 @@ if _CONVERT_FN is None:
         _CONVERT_FN = fallback_candidate
 if _CONVERT_FN is None:
     raise RuntimeError("No known converter function found in hl7_to_fhir_miniconverter")
+
+_NORMALIZE_HL7 = getattr(
+    _converter_module,
+    "normalize_hl7",
+    lambda text: text.replace("\r\n", "\n").replace("\n", "\r").strip("\r\n"),
+)
 
 
 def _normalize_result(obj: Any) -> Any:
@@ -174,6 +184,641 @@ def _init_copilot_if_missing(seed_text: str | None) -> None:
 def _reset_copilot(seed_text: str | None) -> None:
     st.session_state["copilot_agent"] = _new_copilot_agent(seed_text)
     st.session_state.pop("copilot_prompt", None)
+
+
+@dataclass(frozen=True)
+class SampleDefinition:
+    label: str
+    hl7_path: Path
+    description: str
+    message_type: str
+    trigger_event: str
+    fhir_path: Optional[Path] = None
+
+
+SUPPORTED_MESSAGES: dict[str, dict[str, Any]] = {
+    "ADT^A01": {
+        "summary": "Inpatient admissions with demographics, allergies, and encounter context.",
+        "segments": ["MSH", "EVN", "PID", "PD1", "NK1", "AL1", "PV1", "DG1"],
+        "tips": [
+            "Ensure PID-3 has a medical record number.",
+            "PV1-2 (patient class) is required to determine encounter type.",
+            "Include AL1 segments to carry forward allergies."
+        ],
+    },
+    "ORU^R01": {
+        "summary": "Laboratory observation results mapped to Observations and DiagnosticReport.",
+        "segments": ["MSH", "PID", "PV1", "ORC", "OBR", "OBX", "NTE"],
+        "tips": [
+            "OBR-4 and OBX-3 should include LOINC codes when possible.",
+            "OBX-11 conveys result status and should be populated.",
+            "Use NTE segments for interpretive comments."
+        ],
+    },
+    "ORM^O01": {
+        "summary": "Medication or procedural orders mapped to MedicationRequest resources.",
+        "segments": ["MSH", "PID", "PV1", "ORC", "RXO", "RXR", "OBX"],
+        "tips": [
+            "Populate RXO-1 with RXNORM codes for interoperability.",
+            "Provide RXR route/site information for clearer administration instructions.",
+            "Include OBX segments for indications or ancillary order details."
+        ],
+    },
+    "VXU^V04": {
+        "summary": "Immunization updates producing Immunization resources.",
+        "segments": ["MSH", "PID", "PD1", "NK1", "ORC", "RXA", "RXR", "OBX"],
+        "tips": [
+            "RXA-5 should leverage CVX codes for vaccine identification.",
+            "Include administering provider identifiers in ORC-12 and RXA-11.",
+            "OBX segments can communicate funding program or lot-specific details."
+        ],
+    },
+}
+
+
+def _load_sample_definitions() -> dict[str, SampleDefinition]:
+    samples_root = Path("samples")
+    fhir_root = samples_root / "fhir"
+    definitions = [
+        SampleDefinition(
+            label="ADT^A01 — GoodHealth admission",
+            hl7_path=samples_root / "adt_goodhealth_a01.hl7",
+            fhir_path=fhir_root / "adt_goodhealth_a01.json",
+            description="Inpatient admission with allergy and diagnosis details.",
+            message_type="ADT",
+            trigger_event="A01",
+        ),
+        SampleDefinition(
+            label="ORU^R01 — Complete blood count",
+            hl7_path=samples_root / "oru_goodhealth_r01.hl7",
+            fhir_path=fhir_root / "oru_goodhealth_r01.json",
+            description="Outpatient laboratory results for a CBC panel.",
+            message_type="ORU",
+            trigger_event="R01",
+        ),
+        SampleDefinition(
+            label="ORM^O01 — Amoxicillin order",
+            hl7_path=samples_root / "orm_goodhealth_o01.hl7",
+            fhir_path=fhir_root / "orm_goodhealth_o01.json",
+            description="Outpatient medication order for amoxicillin.",
+            message_type="ORM",
+            trigger_event="O01",
+        ),
+        SampleDefinition(
+            label="VXU^V04 — COVID-19 immunization",
+            hl7_path=samples_root / "vxu_goodhealth_v04.hl7",
+            fhir_path=fhir_root / "vxu_goodhealth_v04.json",
+            description="Immunization update for a pediatric patient.",
+            message_type="VXU",
+            trigger_event="V04",
+        ),
+    ]
+    return {definition.label: definition for definition in definitions if definition.hl7_path.exists()}
+
+
+def _init_analytics() -> None:
+    if "analytics" not in st.session_state:
+        st.session_state["analytics"] = {
+            "total_runs": 0,
+            "successful_runs": 0,
+            "partial_runs": 0,
+            "resources_created": 0,
+            "segments_observed": 0,
+            "segments_expected": 0,
+        }
+
+
+def _update_analytics(context: ConversionContext | None, pairs: list[tuple[str, dict]], partial: bool) -> None:
+    _init_analytics()
+    analytics = st.session_state["analytics"]
+    analytics["total_runs"] += 1
+    if partial:
+        analytics["partial_runs"] += 1
+    else:
+        analytics["successful_runs"] += 1
+    analytics["resources_created"] += len(pairs)
+    if context:
+        analytics["segments_observed"] += sum(context.segment_counts.values())
+        message_key = f"{context.message_type or ''}^{context.trigger_event or ''}".strip("^")
+        supported = SUPPORTED_MESSAGES.get(message_key, {})
+        analytics["segments_expected"] += len(supported.get("segments", []))
+    st.session_state["analytics"] = analytics
+
+
+def _analytics_snapshot() -> dict[str, Any]:
+    _init_analytics()
+    data = st.session_state["analytics"]
+    success_rate = 0.0
+    if data["total_runs"]:
+        success_rate = data["successful_runs"] / data["total_runs"]
+    segment_rate = 0.0
+    if data["segments_expected"]:
+        segment_rate = min(1.0, data["segments_observed"] / data["segments_expected"])
+    return {
+        "total_runs": data["total_runs"],
+        "success_rate": success_rate,
+        "segment_rate": segment_rate,
+        "resources_created": data["resources_created"],
+        "partial_runs": data["partial_runs"],
+    }
+
+
+def _component(field: str | None, position: int) -> Optional[str]:
+    if not field:
+        return None
+    parts = str(field).split("^")
+    if 1 <= position <= len(parts):
+        value = parts[position - 1].strip()
+        return value or None
+    return None
+
+
+def _segment_field(segment: Segment, index: int) -> Optional[str]:
+    fields = segment.to_er7().split("|")
+    if segment.name == "MSH":
+        real_index = index - 1
+    else:
+        real_index = index
+    if real_index < 0:
+        return None
+    if real_index < len(fields):
+        value = fields[real_index]
+        return value or None
+    if real_index == len(fields):
+        return fields[-1] or None
+    return None
+
+
+def _parse_segments(hl7_text: str) -> list[Segment]:
+    try:
+        message = parse_message(_NORMALIZE_HL7(hl7_text), validation_level=1)
+    except Exception:
+        return []
+    segments: list[Segment] = []
+
+    def _collect(node: Any) -> None:
+        for child in getattr(node, "children", []):
+            if isinstance(child, Segment):
+                segments.append(child)
+            else:
+                _collect(child)
+
+    _collect(message)
+    return segments
+
+
+def _partial_conversion(hl7_text: str) -> tuple[list[tuple[str, dict]], list[str]]:
+    """
+    Attempt a best-effort conversion when the primary converter fails.
+    Returns (pairs, issues).
+    """
+    segments = _parse_segments(hl7_text)
+    if not segments:
+        return [], ["Unable to read HL7 structure. Verify segment delimiters are carriage returns (\\r)."]
+
+    segment_lookup: dict[str, Segment] = {}
+    for segment in segments:
+        segment_lookup.setdefault(segment.name, segment)
+
+    pairs: list[tuple[str, dict]] = []
+    issues: list[str] = []
+
+    pid = segment_lookup.get("PID")
+    patient_id: Optional[str] = None
+    if pid:
+        mrn_field = _segment_field(pid, 3)
+        patient_id = _component(mrn_field, 1) or "unknown"
+        patient = {
+            "resourceType": "Patient",
+            "id": f"pat-{patient_id}",
+        }
+        name_field = _segment_field(pid, 5)
+        family = _component(name_field, 1)
+        given = [value for value in (_component(name_field, 2), _component(name_field, 3)) if value]
+        if family or given:
+            patient["name"] = [{"family": family, "given": given}]  # type: ignore[index]
+        birth_raw = _segment_field(pid, 7)
+        if birth_raw and birth_raw.isdigit() and len(birth_raw) == 8:
+            patient["birthDate"] = f"{birth_raw[:4]}-{birth_raw[4:6]}-{birth_raw[6:]}"
+        gender = _segment_field(pid, 8)
+        if gender:
+            mapping = {"F": "female", "M": "male", "O": "other", "U": "unknown"}
+            patient["gender"] = mapping.get(gender.upper(), "unknown")
+        addr_field = _segment_field(pid, 11)
+        street = _component(addr_field, 1)
+        city = _component(addr_field, 3)
+        state = _component(addr_field, 4)
+        postal = _component(addr_field, 5)
+        country = _component(addr_field, 6)
+        address = {}
+        if street:
+            address["line"] = [street]
+        if city:
+            address["city"] = city
+        if state:
+            address["state"] = state
+        if postal:
+            address["postalCode"] = postal
+        if country:
+            address["country"] = country
+        if address:
+            patient["address"] = [address]  # type: ignore[index]
+        pairs.append(("Patient", patient))
+    else:
+        issues.append("PID segment missing; generated partial bundle without demographics.")
+
+    pv1 = segment_lookup.get("PV1")
+    if pv1 and patient_id:
+        encounter_id = f"enc-{_segment_field(pv1, 19) or 'partial'}"
+        cls = (_segment_field(pv1, 2) or "U").upper()
+        class_map = {"I": "IMP", "O": "AMB", "E": "EMER", "P": "PRENC"}
+        class_code = class_map.get(cls, "UNK")
+        class_display_map = {
+            "IMP": "inpatient encounter",
+            "AMB": "ambulatory",
+            "EMER": "emergency",
+            "PRENC": "pre-admission",
+            "UNK": "unknown",
+        }
+        encounter = {
+            "resourceType": "Encounter",
+            "id": encounter_id,
+            "status": "in-progress",
+            "class": {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+                "code": class_code,
+                "display": class_display_map.get(class_code, "unknown"),
+            },
+            "subject": {"reference": f"Patient/pat-{patient_id}"},
+        }
+        location_raw = _segment_field(pv1, 3)
+        location_display = " / ".join(filter(None, (_component(location_raw, i) for i in (1, 2, 3, 4))))
+        if location_display:
+            encounter["location"] = [{"location": {"display": location_display}}]  # type: ignore[index]
+        pairs.append(("Encounter", encounter))
+
+    return pairs, issues
+
+
+def _supported_key(message_type: Optional[str], trigger_event: Optional[str]) -> Optional[str]:
+    if not message_type:
+        return None
+    key = f"{message_type}"
+    if trigger_event:
+        key = f"{message_type}^{trigger_event}"
+    return key if key in SUPPORTED_MESSAGES else None
+
+
+def _segment_guidance(context: ConversionContext | None) -> tuple[list[str], list[str]]:
+    if not context:
+        return [], []
+    key = _supported_key(context.message_type, context.trigger_event)
+    if not key:
+        return [], []
+    supported = SUPPORTED_MESSAGES.get(key, {})
+    expected = supported.get("segments", [])
+    missing = [segment for segment in expected if context.segment_counts.get(segment, 0) == 0]
+    return expected, missing
+
+
+def _build_issue_list(
+    context: ConversionContext | None,
+    error: Exception | None,
+    partial_issues: list[str],
+) -> list[str]:
+    issues: list[str] = []
+    if error:
+        issues.append(str(error))
+    issues.extend(partial_issues)
+    _, missing = _segment_guidance(context)
+    if missing:
+        links = ", ".join(
+            f"[{segment}](https://hl7-definition.caristix.com/v2/HL7v2.5.1/Segments/{segment})"
+            for segment in missing
+        )
+        issues.append(f"Missing recommended segments: {links}")
+    return issues
+
+
+def _mapping_summary_rows(context: ConversionContext | None, pairs: list[tuple[str, dict]]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    if context and context.resources:
+        for insight in context.resources:
+            if not insight.resource_type:
+                continue
+            summary_bits = []
+            for key, value in insight.summary.items():
+                summary_bits.append(f"{key}={value}")
+            if insight.anomalies:
+                summary_bits.extend(insight.anomalies)
+            rows.append(
+                {
+                    "Resource": insight.resource_type,
+                    "Highlights": "; ".join(summary_bits) or "Mapped without summary details.",
+                }
+            )
+    else:
+        for resource_type, resource in pairs:
+            highlight_keys = []
+            if "id" in resource:
+                highlight_keys.append(f"id={resource['id']}")
+            if "code" in resource and isinstance(resource["code"], dict):
+                display = resource["code"].get("text") or ""
+                if display:
+                    highlight_keys.append(f"code={display}")
+            rows.append(
+                {
+                    "Resource": resource_type,
+                    "Highlights": "; ".join(highlight_keys) or "Resource created.",
+                }
+            )
+    return rows
+
+
+def run_conversion(label: str, hl7_text: str, *, update_copilot: bool = True) -> dict[str, Any]:
+    start_time = time.time()
+    result_payload: Any | None = None
+    error: Exception | None = None
+    pairs: list[tuple[str, dict]] = []
+    partial = False
+    partial_issues: list[str] = []
+
+    try:
+        result_payload = _CONVERT_FN(hl7_text)
+        normalized = _normalize_result(result_payload)
+        pairs = _pairs_from_result(normalized)
+    except Exception as exc:  # noqa: BLE001
+        error = exc
+        pairs, partial_issues = _partial_conversion(hl7_text)
+        partial = bool(pairs)
+        if partial:
+            result_payload = {
+                "resourceType": "Bundle",
+                "type": "collection",
+                "entry": [{"resource": resource} for _, resource in pairs],
+            }
+    elapsed = time.time() - start_time
+
+    agent = ConversionCopilot.from_payload(
+        hl7_text,
+        result_payload,
+        duration_seconds=elapsed,
+        error=error if not partial else None,
+    )
+    if update_copilot:
+        st.session_state["copilot_agent"] = agent
+
+    context = agent.context
+    _update_analytics(context, pairs, partial)
+
+    issues = _build_issue_list(context, error, partial_issues)
+
+    return {
+        "label": label,
+        "elapsed": elapsed,
+        "pairs": pairs,
+        "context": context,
+        "agent": agent,
+        "error": error,
+        "partial": partial,
+        "issues": issues,
+        "hl7_text": hl7_text,
+    }
+
+
+def _render_conversion_outcome(outcome: dict[str, Any], *, show_actions: bool = True) -> None:
+    context: ConversionContext | None = outcome["context"]
+    pairs: list[tuple[str, dict]] = outcome["pairs"]
+    partial: bool = outcome["partial"]
+    issues: list[str] = outcome["issues"]
+    elapsed: float = outcome["elapsed"]
+    label: str = outcome["label"]
+    error: Exception | None = outcome["error"]
+
+    message_type = context.message_type if context else None
+    trigger = context.trigger_event if context else None
+    message_key = _supported_key(message_type, trigger)
+    supported = SUPPORTED_MESSAGES.get(message_key or "", {})
+
+    expected_segments, missing_segments = _segment_guidance(context)
+
+    if pairs:
+        message = f"Converted {len(pairs)} FHIR resources in {elapsed:.2f} seconds."
+        if partial:
+            st.warning(f"Partial conversion complete — {message}", icon="⚠️")
+        else:
+            st.success(message, icon="✅")
+    else:
+        if error:
+            st.error(f"Conversion failed: {error}", icon="🚫")
+        else:
+            st.info("No FHIR resources produced; review the input message for required segments.", icon="ℹ️")
+
+    badge = ""
+    if message_type and trigger:
+        badge = f"`{message_type}^{trigger}`"
+    elif message_type:
+        badge = f"`{message_type}`"
+    if badge:
+        st.caption(f"Message profile detected: {badge}")
+
+    if supported:
+        st.markdown(
+            f"<div class='conversion-summary'>Supported segments: {', '.join(f'`{seg}`' for seg in expected_segments)}</div>",
+            unsafe_allow_html=True,
+        )
+
+    by_type: dict[str, int] = {}
+    for resource_type, _ in pairs:
+        by_type[resource_type] = by_type.get(resource_type, 0) + 1
+
+    if by_type:
+        chips_html = "".join(
+            f"<span class='pill'><span>{html.escape(resource)}</span><strong>{count}</strong></span>"
+            for resource, count in sorted(by_type.items())
+        )
+        st.markdown(f"<div class='pill-row'>{chips_html}</div>", unsafe_allow_html=True)
+
+    mapping_rows = _mapping_summary_rows(context, pairs)
+    if mapping_rows:
+        st.markdown("#### Transformation summary")
+        _dataframe(mapping_rows, use_container_width=True)
+
+    if issues:
+        st.markdown("#### Conversion notes")
+        for note in issues:
+            st.warning(note)
+
+    if missing_segments:
+        st.markdown("#### Suggested fixes")
+        st.write(
+            "Add or correct the following HL7 segments to improve fidelity:"
+        )
+        for segment in missing_segments:
+            st.write(
+                f"- [{segment} reference](https://hl7-definition.caristix.com/v2/HL7v2.5.1/Segments/{segment})"
+            )
+
+    resources_only = [resource for _, resource in pairs]
+    st.markdown("<hr class='section-divider' />", unsafe_allow_html=True)
+
+    tab_json, tab_res, tab_quality, tab_samples = st.tabs(
+        ["FHIR JSON", "Resources", "Quality", "Examples & schemas"]
+    )
+
+    base_name = Path(label).stem or "hl7_message"
+    if resources_only:
+        json_payload = json.dumps(resources_only, default=_json_ready, ensure_ascii=False, indent=2)
+        ndjson_payload = _ndjson(pairs)
+    else:
+        json_payload = "[]"
+        ndjson_payload = ""
+
+    with tab_json:
+        if resources_only:
+            st.json(resources_only)
+            st.download_button(
+                "Download FHIR bundle (JSON)",
+                json_payload,
+                f"{base_name}_bundle.json",
+                "application/json",
+                use_container_width=True,
+            )
+            st.download_button(
+                "Download NDJSON",
+                ndjson_payload,
+                f"{base_name}_bundle.ndjson",
+                "application/x-ndjson",
+                use_container_width=True,
+            )
+        else:
+            st.info("No FHIR resources available yet.")
+
+    with tab_res:
+        if not resources_only:
+            st.info("No FHIR resources available.")
+        else:
+            grouped: dict[str, list[dict]] = {}
+            for resource_type, resource in pairs:
+                grouped.setdefault(resource_type, []).append(resource)
+            for resource_type, resources in sorted(grouped.items()):
+                st.markdown(f"**{resource_type}** ({len(resources)})")
+                for resource in resources:
+                    rid = resource.get("id") or "auto-generated"
+                    with st.expander(f"{resource_type} — {rid}", expanded=False):
+                        st.json(resource)
+
+    with tab_quality:
+        if not resources_only:
+            st.info("Quality metrics unavailable until conversion completes.")
+        else:
+            rows = []
+            anomalies_present: dict[str, list[str]] = {}
+            completeness_values: list[float] = []
+            for resource_type, resource in pairs:
+                anomalies = detect_anomalies(resource_type, resource)
+                if anomalies:
+                    key = resource.get("id") or resource_type
+                    anomalies_present[key] = anomalies
+                score = completeness_score(resource_type, resource)
+                if score is not None:
+                    completeness_values.append(float(score))
+                rows.append(
+                    {
+                        "resourceType": resource_type,
+                        "id": resource.get("id", ""),
+                        "completeness": score,
+                        "anomalies": "; ".join(anomalies),
+                    }
+                )
+            _dataframe(rows, use_container_width=True)
+            if anomalies_present:
+                for key, messages in anomalies_present.items():
+                    with st.expander(f"Anomalies — {key}", expanded=False):
+                        for message in messages:
+                            st.write(f"- {message}")
+
+    with tab_samples:
+        if message_key and message_key in SUPPORTED_MESSAGES:
+            st.markdown(f"**{message_key} schema guidance**")
+            st.write(supported.get("summary"))
+            st.markdown("**Common segments**")
+            st.write(", ".join(supported.get("segments", [])))
+            st.markdown("**Implementation tips**")
+            for tip in supported.get("tips", []):
+                st.write(f"- {tip}")
+        sample_defs = _load_sample_definitions()
+        for definition in sample_defs.values():
+            with st.expander(definition.label, expanded=False):
+                st.caption(definition.description)
+                hl7_text = definition.hl7_path.read_text(encoding="utf-8")
+                st.code(hl7_text, language="hl7")
+                if definition.fhir_path and definition.fhir_path.exists():
+                    fhir_text = definition.fhir_path.read_text(encoding="utf-8")
+                    st.code(fhir_text, language="json")
+
+    if not show_actions:
+        return
+
+    st.markdown("<hr class='section-divider' />", unsafe_allow_html=True)
+
+    safe_pairs = pairs
+    redact_toggle = st.toggle("De-identify PHI (mask patient identifiers)", value=False)
+    if redact_toggle:
+        safe_pairs = [
+            (resource_type, mask_patient(resource) if resource_type == "Patient" else resource)
+            for resource_type, resource in pairs
+        ]
+
+    st.markdown("#### Send to FHIR (optional)")
+    default_base = os.getenv("FHIR_BASE_URL", "http://localhost:8080/fhir")
+    token_default = os.getenv("AUTH_TOKEN", "")
+    col_base, col_token = st.columns([2, 1])
+    base_url = col_base.text_input("FHIR base URL", value=default_base)
+    bearer_token = col_token.text_input("Bearer token (optional)", type="password", value=token_default)
+
+    if st.button("POST all resources", use_container_width=True, disabled=not safe_pairs):
+        if not safe_pairs:
+            st.info("No resources to send.")
+        else:
+            client = FHIRClient(base_url, bearer_token or None)
+            posted: list[dict[str, Any]] = []
+            errors: list[str] = []
+            for resource_type, resource in safe_pairs:
+                try:
+                    response = client.create(resource_type, resource)
+                    entry: dict[str, Any] = {"resourceType": resource_type, "status": response.status_code}
+                    try:
+                        payload = response.json()
+                    except ValueError:
+                        payload = {}
+                    resource_id = payload.get("id")
+                    if resource_id:
+                        entry["id"] = resource_id
+                    audit_event("create", resource_type, resource_id, "streamlit-ui")
+                    posted.append(entry)
+                except Exception as exc:  # noqa: BLE001
+                    errors.append(f"{resource_type}: {exc}")
+                    posted.append({"resourceType": resource_type, "status": "error"})
+            if errors:
+                for msg in errors:
+                    st.warning(msg)
+            st.success("POST complete" if not errors else "POST attempted with warnings")
+            if posted:
+                st.table(posted)
+
+    st.markdown("#### Referral intake workflow")
+    if st.button("Simulate referral intake workflow", use_container_width=True):
+        patient_resource = next((res for rtype, res in pairs if rtype == "Patient"), None)
+        if not patient_resource:
+            st.info("A Patient resource is required to trigger this workflow.")
+        else:
+            workflow = build_referral_intake_workflow(None, patient_resource, {"status": "planned"})
+            workflow_context = workflow.run({})
+            audit_event("workflow", "Patient", patient_resource.get("id"), "streamlit-ui")
+            st.json(workflow_context)
+
+
 
 
 _COPILOT_SVG = """
@@ -549,6 +1194,8 @@ st.markdown(
     }
     .action-row {
         margin-top: 0.85rem;
+        display: flex;
+        gap: 0.75rem;
     }
     .action-row button[kind="primary"] {
         background: linear-gradient(135deg, #6d8cfb, #8fe3ff);
@@ -676,6 +1323,23 @@ st.markdown(
         font-size: 0.95rem;
         font-weight: 500;
     }
+    @media (max-width: 900px) {
+        .page-hero {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+        .card {
+            padding: 1rem;
+            margin-bottom: 1rem;
+        }
+        .action-row {
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .action-row button {
+            width: 100%;
+        }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -706,48 +1370,93 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 # --- Sidebar inputs ---
+sample_definitions = _load_sample_definitions()
+sample_labels = list(sample_definitions.keys())
+
 with st.sidebar:
-    st.subheader("Message Input")
-    samples_dir = Path("samples")
-    sample_files = sorted(p.name for p in samples_dir.glob("*.hl7"))
-    sample = None
-    if sample_files:
-        sample = st.selectbox("Sample HL7 message", sample_files, index=0)
-    up = st.file_uploader("Or upload your own", type=["hl7", "txt"])
-    st.caption("Limit 200MB per file • HL7, TXT")
+    st.subheader("Message input")
+    sample_choice: Optional[str] = None
+    if sample_labels:
+        default_index = 0
+        if st.session_state.get("selected_sample") in sample_labels:
+            default_index = sample_labels.index(st.session_state["selected_sample"])
+        sample_choice = st.selectbox(
+            "Sample HL7 message",
+            sample_labels,
+            index=default_index,
+        )
+        st.session_state["selected_sample"] = sample_choice
+        sample_meta = sample_definitions[sample_choice]
+        st.caption(sample_meta.description)
+        if sample_meta.fhir_path and sample_meta.fhir_path.exists():
+            st.download_button(
+                "Download sample FHIR bundle",
+                sample_meta.fhir_path.read_text(encoding="utf-8"),
+                file_name=sample_meta.fhir_path.name,
+                mime="application/json",
+                use_container_width=True,
+            )
+    else:
+        sample_meta = None
+        st.info("Add HL7 examples under `samples/` to enable quick-start testing.")
+
+    st.divider()
+    uploaded_files = st.file_uploader(
+        "Upload HL7 file(s) for batch conversion",
+        type=["hl7", "txt"],
+        accept_multiple_files=True,
+        help="Drop one or more HL7 v2 messages to convert them together.",
+    )
+    if uploaded_files:
+        st.success(f"{len(uploaded_files)} file(s) queued for conversion.")
+        if st.button("Load first uploaded file into editor", use_container_width=True):
+            first_file = uploaded_files[0]
+            file_text = first_file.getvalue().decode("utf-8", errors="ignore")
+            st.session_state.hl7_text = file_text
+            st.session_state.input_label = first_file.name
+            st.session_state._last_sample = None
+            _reset_copilot(file_text)
+            st.success(f"{first_file.name} loaded into the editor.")
+
+    st.divider()
+    st.markdown(
+        "Supported message profiles: "
+        + ", ".join(f"`{key}`" for key in SUPPORTED_MESSAGES.keys())
+    )
+    st.markdown(
+        "Need formatting help? Review the "
+        "[HL7 v2.5.1 specification](https://www.hl7.org/documentcenter/public_temp_C2C6B76B-1C23-BA17-0CE3F0B2DB9A0C1C/standards/v2/v251/infrastructure.html)."
+    )
 
 # Editor state
 if "hl7_text" not in st.session_state:
-    if sample_files:
-        default_sample = Path("samples", sample_files[0])
-        st.session_state.hl7_text = default_sample.read_text(encoding="utf-8")
-        st.session_state.input_label = sample_files[0]
-        st.session_state._last_sample = sample_files[0]
+    if sample_choice:
+        selected = sample_definitions[sample_choice]
+        st.session_state.hl7_text = selected.hl7_path.read_text(encoding="utf-8")
+        st.session_state.input_label = selected.hl7_path.name
+        st.session_state._last_sample = sample_choice
     else:
         st.session_state.hl7_text = ""
-        st.session_state.input_label = "hl7_message"
+        st.session_state.input_label = "manual_entry.hl7"
         st.session_state._last_sample = None
-_init_copilot_if_missing(st.session_state.get("hl7_text", ""))
+    _init_copilot_if_missing(st.session_state.hl7_text)
+else:
+    _init_copilot_if_missing(st.session_state.get("hl7_text", ""))
 
-# Auto-load when sample changes (no upload)
-if sample and st.session_state.get("_last_sample") != sample and up is None:
-    sample_path = Path("samples", sample)
+# Auto-load when sample changes
+if sample_choice and st.session_state.get("_last_sample") != sample_choice:
+    selected_definition = sample_definitions[sample_choice]
     try:
-        st.session_state.hl7_text = sample_path.read_text(encoding="utf-8")
-        st.session_state.input_label = sample
-        st.session_state._last_sample = sample
-        _reset_copilot(st.session_state.hl7_text)
+        new_text = selected_definition.hl7_path.read_text(encoding="utf-8")
+        st.session_state.hl7_text = new_text
+        st.session_state.input_label = selected_definition.hl7_path.name
+        st.session_state._last_sample = sample_choice
+        _reset_copilot(new_text)
+        st.toast(f"Loaded {sample_choice}")
     except OSError as exc:
-        st.warning(f"Unable to read sample {sample}: {exc}")
-
-# Uploaded file overrides
-if up is not None:
-    uploaded_text = up.read().decode("utf-8", errors="ignore")
-    st.session_state.hl7_text = uploaded_text
-    st.session_state.input_label = up.name or "uploaded_message"
-    st.session_state._last_sample = None
-    _reset_copilot(st.session_state.hl7_text)
+        st.sidebar.warning(f"Unable to read sample: {exc}")
 
 st.markdown(
     """
@@ -762,13 +1471,25 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-primary_col, copilot_col = st.columns([3, 2])
+analytics = _analytics_snapshot()
+metric_cols = st.columns(4)
+metric_cols[0].metric("Conversions", analytics["total_runs"])
+metric_cols[1].metric("Success rate", f"{analytics['success_rate'] * 100:.0f}%")
+metric_cols[2].metric("Segment coverage", f"{analytics['segment_rate'] * 100:.0f}%")
+metric_cols[3].metric("FHIR resources", analytics["resources_created"])
+
+if analytics["partial_runs"]:
+    st.caption(f"Partial conversions recorded: {analytics['partial_runs']}")
+
+primary_col, aside_col = st.columns([3, 2])
+
 with primary_col:
     st.markdown('<div class="card card-editor">', unsafe_allow_html=True)
     st.markdown("<span class='card-eyebrow'>Message</span>", unsafe_allow_html=True)
     st.markdown("<h3>HL7 payload</h3>", unsafe_allow_html=True)
     st.markdown(
-        "<p>Paste or tweak an HL7 v2 message and convert it into a rich FHIR bundle in seconds.</p>",
+        "<p>Paste or tweak an HL7 v2 message and convert it into a rich FHIR bundle in seconds. "
+        "The editor supports keyboard navigation and resizes for smaller screens.</p>",
         unsafe_allow_html=True,
     )
     hl7_text = st.text_area(
@@ -777,275 +1498,151 @@ with primary_col:
         height=260,
         key="editor",
         label_visibility="collapsed",
-        placeholder="MSH|^~\\&|ADT|HORIZON|EHR|HORIZON|202510131005||ADT^A01|A01-10001|P|2.5.1",
+        placeholder="MSH|^~\&|ADT|GOODHEALTH|EHR|GOODHEALTH|202510131005||ADT^A01|A01-99999|P|2.5.1",
     )
     st.session_state.hl7_text = hl7_text
 
     st.markdown('<div class="action-row">', unsafe_allow_html=True)
     c1, c2 = st.columns([1, 1])
-    convert = _button(c1, "Convert to FHIR", type="primary")
+    convert = _button(c1, "Convert current message", type="primary")
     reset = _button(c2, "Reset editor")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    current_label = html.escape(st.session_state.get("input_label", "hl7_message"))
+    current_label = html.escape(st.session_state.get("input_label", "manual_entry.hl7"))
     st.markdown(
         f"<div class='card-footnote'>Source: <strong>{current_label}</strong></div>",
         unsafe_allow_html=True,
     )
     st.markdown("</div>", unsafe_allow_html=True)
-with copilot_col:
+
+    st.markdown('<div class="card card-batch">', unsafe_allow_html=True)
+    st.markdown("<span class='card-eyebrow'>Batch</span>", unsafe_allow_html=True)
+    st.markdown("<h3>Bulk conversion</h3>", unsafe_allow_html=True)
+    if uploaded_files:
+        st.markdown(
+            "<p>The following files will be processed together. Each result includes downloads and quality feedback.</p>",
+            unsafe_allow_html=True,
+        )
+        for uploaded in uploaded_files:
+            st.markdown(f"- `{uploaded.name}` ({uploaded.size} bytes)")
+    else:
+        st.markdown(
+            "<p>Upload one or more `.hl7` files in the sidebar to enable batch conversion.</p>",
+            unsafe_allow_html=True,
+        )
+    batch_convert = st.button(
+        "Batch convert uploaded files",
+        use_container_width=True,
+        disabled=not uploaded_files,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with aside_col:
+    st.markdown('<div class="card card-supported">', unsafe_allow_html=True)
+    st.markdown("<span class='card-eyebrow'>Profiles</span>", unsafe_allow_html=True)
+    st.markdown("<h3>Supported message types</h3>", unsafe_allow_html=True)
+    for key, info in SUPPORTED_MESSAGES.items():
+        st.markdown(f"**{key}** — {info['summary']}")
+    st.markdown("</div>", unsafe_allow_html=True)
     copilot_panel = st.container()
-result_container = st.container()
+
 if reset:
     st.session_state.clear()
     _rerun_app()
+
+single_outcome: Optional[dict[str, Any]] = None
+batch_outcomes: list[dict[str, Any]] = []
 
 if convert:
     if not hl7_text.strip():
         st.warning("Please provide HL7 content before converting.")
     else:
-        result = None
-        error: Exception | None = None
-        elapsed = 0.0
         status_callable = getattr(st, "status", None)
         if callable(status_callable):
-            with status_callable("Converting…", expanded=False) as status:
-                t0 = time.time()
-                try:
-                    result = _CONVERT_FN(hl7_text)
-                    elapsed = time.time() - t0
-                    status.update(label=f"Done in {elapsed:.2f}s", state="complete")
-                except Exception as exc:  # noqa: BLE001
-                    error = exc
-                    status.update(label="Conversion failed", state="error")
+            with status_callable("Converting HL7 message…", expanded=False) as status:
+                outcome = run_conversion(st.session_state.get("input_label", "manual_entry.hl7"), hl7_text)
+                if outcome["error"] and not outcome["partial"]:
+                    status.update(label="Conversion completed with errors", state="error")
+                elif outcome["partial"]:
+                    status.update(label="Partial conversion generated", state="running")
+                else:
+                    status.update(label="Conversion complete", state="complete")
         else:
-            with st.spinner("Converting…"):
-                t0 = time.time()
-                try:
-                    result = _CONVERT_FN(hl7_text)
-                    elapsed = time.time() - t0
-                except Exception as exc:  # noqa: BLE001
-                    error = exc
-        if error is not None:
-            logger.exception("Unable to convert HL7 message", exc_info=error)
-            st.error(f"Unable to convert HL7 message: {error}")
-            st.session_state["copilot_agent"] = ConversionCopilot.from_payload(
-                hl7_text,
-                result,
-                duration_seconds=elapsed or None,
-                error=error,
-            )
-        elif result is None:
-            st.error("Conversion produced no result.")
-            st.session_state["copilot_agent"] = ConversionCopilot.from_payload(
-                hl7_text,
-                result,
-                duration_seconds=elapsed or None,
-                error=None,
-            )
+            with st.spinner("Converting HL7 message…"):
+                outcome = run_conversion(st.session_state.get("input_label", "manual_entry.hl7"), hl7_text)
+        single_outcome = outcome
+        if outcome["pairs"]:
+            st.toast(f"Converted {len(outcome['pairs'])} FHIR resource(s).")
         else:
-            st.session_state["copilot_agent"] = ConversionCopilot.from_payload(
-                hl7_text,
-                result,
-                duration_seconds=elapsed or None,
-                error=None,
-            )
-            normalized = _normalize_result(result)
-            pairs = _pairs_from_result(normalized)
-            with result_container:
-                st.markdown('<div class="card card-results">', unsafe_allow_html=True)
-                st.markdown("<span class='card-eyebrow'>Conversion</span>", unsafe_allow_html=True)
-                st.markdown("<h3>FHIR bundle preview</h3>", unsafe_allow_html=True)
+            st.toast("Conversion attempted. Review notes below for corrective actions.")
 
-                if not pairs:
-                    st.markdown(
-                        "<div class='empty-state'>No FHIR resources were produced from this message.</div>",
-                        unsafe_allow_html=True,
+if batch_convert and uploaded_files:
+    progress = st.progress(0, text="Batch conversion in progress…")
+    for index, uploaded in enumerate(uploaded_files, start=1):
+        content = uploaded.getvalue().decode("utf-8", errors="ignore")
+        outcome = run_conversion(uploaded.name, content, update_copilot=False)
+        batch_outcomes.append(outcome)
+        progress.progress(index / len(uploaded_files))
+    progress.empty()
+    st.success(f"Processed {len(batch_outcomes)} message(s).")
+
+with primary_col:
+    if single_outcome:
+        st.markdown('<div class="card card-results">', unsafe_allow_html=True)
+        _render_conversion_outcome(single_outcome)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    if batch_outcomes:
+        st.markdown('<div class="card card-results">', unsafe_allow_html=True)
+        st.markdown("### Batch conversion results")
+        summary_rows = []
+        for item in batch_outcomes:
+            status_label = "Success"
+            if item["partial"]:
+                status_label = "Partial"
+            elif not item["pairs"]:
+                status_label = "Error"
+            summary_rows.append(
+                {
+                    "File": item["label"],
+                    "Status": status_label,
+                    "Resources": len(item["pairs"]),
+                    "Duration (s)": f"{item['elapsed']:.2f}",
+                }
+            )
+        _dataframe(summary_rows, use_container_width=True)
+        for item in batch_outcomes:
+            status_label = "Success"
+            if item["partial"]:
+                status_label = "Partial"
+            elif not item["pairs"]:
+                status_label = "Error"
+            with st.expander(f"{item['label']} — {status_label}", expanded=False):
+                if item["pairs"]:
+                    _render_conversion_outcome(item, show_actions=False)
+                    bundle_json = json.dumps(
+                        [resource for _, resource in item["pairs"]],
+                        default=_json_ready,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    st.download_button(
+                        "Download bundle JSON",
+                        bundle_json,
+                        f"{Path(item['label']).stem}_bundle.json",
+                        "application/json",
+                        use_container_width=True,
+                    )
+                    st.download_button(
+                        "Download NDJSON",
+                        _ndjson(item["pairs"]),
+                        f"{Path(item['label']).stem}_bundle.ndjson",
+                        "application/x-ndjson",
+                        use_container_width=True,
                     )
                 else:
-                    total = len(pairs)
-                    by_type: dict[str, int] = {}
-                    for resource_type, _ in pairs:
-                        by_type[resource_type] = by_type.get(resource_type, 0) + 1
-
-                    toast_fn = getattr(st, "toast", None)
-                    summary_message = f"Converted ✅ {total} resources across {len(by_type)} types"
-                    if callable(toast_fn):
-                        toast_fn(summary_message)
-                    else:
-                        st.markdown(f"<div class='conversion-summary'>{summary_message}</div>", unsafe_allow_html=True)
-
-                    quality_rows: list[dict[str, Any]] = []
-                    anomalies_present: dict[str, list[str]] = {}
-                    completeness_values: list[float] = []
-                    for resource_type, resource in pairs:
-                        completeness = completeness_score(resource_type, resource)
-                        if completeness is not None:
-                            completeness_values.append(float(completeness))
-                        anomalies = detect_anomalies(resource_type, resource)
-                        if anomalies:
-                            key = resource.get("id") or resource_type
-                            anomalies_present[key] = anomalies
-                        quality_rows.append(
-                            {
-                                "resourceType": resource_type,
-                                "id": resource.get("id", ""),
-                                "completeness": completeness,
-                                "anomalies": "; ".join(anomalies),
-                            }
-                        )
-                    avg_completeness = (
-                        sum(completeness_values) / len(completeness_values) if completeness_values else None
-                    )
-
-                    metrics = [
-                        ("FHIR resources", str(total)),
-                        ("Resource types", str(len(by_type))),
-                        (
-                            "Avg completeness",
-                            f"{avg_completeness:.0%}" if avg_completeness is not None else "--",
-                        ),
-                        ("Elapsed", f"{elapsed:.2f}s" if elapsed else "--"),
-                    ]
-                    metric_cols = st.columns(len(metrics))
-                    for col, (label, value) in zip(metric_cols, metrics):
-                        col.markdown(
-                            f"<div class='metric-card'><h4>{html.escape(label)}</h4><span>{html.escape(value)}</span></div>",
-                            unsafe_allow_html=True,
-                        )
-
-                    chips_html = "".join(
-                        f"<span class='pill'><span>{html.escape(rtype)}</span><strong>{count}</strong></span>"
-                        for rtype, count in sorted(by_type.items())
-                    )
-                    if chips_html:
-                        st.markdown(f"<div class='pill-row'>{chips_html}</div>", unsafe_allow_html=True)
-
-                    resources_only = [resource for _, resource in pairs]
-                    st.markdown("<hr class='section-divider' />", unsafe_allow_html=True)
-                    tab_json, tab_res, tab_quality = st.tabs(["FHIR JSON", "Resources", "Quality"])
-
-                    with tab_json:
-                        if resources_only:
-                            st.json(resources_only)
-                            json_payload = json.dumps(
-                                resources_only, default=_json_ready, ensure_ascii=False, indent=2
-                            )
-                            base_name = Path(st.session_state.get("input_label", "hl7_message")).stem
-                            st.download_button(
-                                "Download JSON",
-                                json_payload,
-                                f"{base_name}_bundle.json",
-                                "application/json",
-                                use_container_width=True,
-                            )
-                            st.download_button(
-                                "Download NDJSON",
-                                _ndjson(pairs),
-                                f"{base_name}_bundle.ndjson",
-                                "application/x-ndjson",
-                                use_container_width=True,
-                            )
-                        else:
-                            st.markdown(
-                                "<div class='empty-state'>No FHIR resources available.</div>",
-                                unsafe_allow_html=True,
-                            )
-
-                    with tab_res:
-                        if not resources_only:
-                            st.markdown(
-                                "<div class='empty-state'>No FHIR resources available.</div>",
-                                unsafe_allow_html=True,
-                            )
-                        else:
-                            grouped: dict[str, list[dict]] = {}
-                            for rtype, resource in pairs:
-                                grouped.setdefault(rtype, []).append(resource)
-                            for rtype, resources in sorted(grouped.items()):
-                                st.markdown(f"**{html.escape(rtype)}** ({len(resources)})")
-                                for resource in resources:
-                                    rid = resource.get("id") or "no-id"
-                                    label = f"{rtype} -- {rid}"
-                                    with st.expander(label, expanded=False):
-                                        st.json(resource)
-
-                    with tab_quality:
-                        if not resources_only:
-                            st.markdown(
-                                "<div class='empty-state'>No FHIR resources available.</div>",
-                                unsafe_allow_html=True,
-                            )
-                        else:
-                            _dataframe(quality_rows, use_container_width=True)
-                            if anomalies_present:
-                                for key, messages in anomalies_present.items():
-                                    with st.expander(f"Anomalies -- {key}", expanded=False):
-                                        for message in messages:
-                                            st.write(f"- {message}")
-
-                    st.markdown("<hr class='section-divider' />", unsafe_allow_html=True)
-                    toggle_callable = getattr(st, "toggle", None)
-                    if callable(toggle_callable):
-                        redact = toggle_callable("De-identify PHI (mask names/IDs)")
-                    else:
-                        redact = st.checkbox("De-identify PHI (mask names/IDs)", value=False)
-                    safe_pairs = [
-                        (resource_type, mask_patient(resource) if redact else resource)
-                        for resource_type, resource in pairs
-                    ]
-
-                    st.markdown("<span class='card-eyebrow'>Share</span>", unsafe_allow_html=True)
-                    st.markdown("<h4>Send resources to a FHIR server</h4>", unsafe_allow_html=True)
-                    default_base = os.getenv("FHIR_BASE_URL", "http://localhost:8080/fhir")
-                    token_default = os.getenv("AUTH_TOKEN", "")
-                    col_base, col_token = st.columns([2, 1])
-                    base = col_base.text_input("FHIR base URL", value=default_base)
-                    token = col_token.text_input("Bearer token (optional)", type="password", value=token_default)
-                    if st.button("POST all resources", use_container_width=True):
-                        if not safe_pairs:
-                            st.info("No resources to send.")
-                        else:
-                            client = FHIRClient(base, token or None)
-                            posted: list[dict[str, Any]] = []
-                            errors: list[str] = []
-                            for resource_type, resource in safe_pairs:
-                                try:
-                                    response = client.create(resource_type, resource)
-                                    entry: dict[str, Any] = {"resourceType": resource_type, "status": response.status_code}
-                                    try:
-                                        payload = response.json()
-                                    except ValueError:
-                                        payload = {}
-                                    resource_id = payload.get("id")
-                                    if resource_id:
-                                        entry["id"] = resource_id
-                                    audit_event("create", resource_type, resource_id, "streamlit-ui")
-                                    posted.append(entry)
-                                except Exception as exc:  # noqa: BLE001
-                                    message = f"{resource_type}: {exc}"
-                                    errors.append(message)
-                                    posted.append({"resourceType": resource_type, "status": "error"})
-                            if errors:
-                                for msg in errors:
-                                    st.warning(msg)
-                            st.success("POST complete" if not errors else "POST attempted with warnings")
-                            if posted:
-                                st.table(posted)
-
-                    st.markdown("<span class='card-eyebrow'>Automation</span>", unsafe_allow_html=True)
-                    st.markdown("<h4>Referral intake workflow</h4>", unsafe_allow_html=True)
-                    if st.button("Simulate referral intake workflow", use_container_width=True):
-                        patient_resource = next((res for rtype, res in pairs if rtype == "Patient"), None)
-                        if not patient_resource:
-                            st.info("A Patient resource is required to simulate this workflow.")
-                        else:
-                            workflow = build_referral_intake_workflow(None, patient_resource, {"status": "planned"})
-                            context = workflow.run({})
-                            audit_event("workflow", "Patient", patient_resource.get("id"), "streamlit-ui")
-                            st.json(context)
-
-                st.markdown("</div>", unsafe_allow_html=True)
+                    st.warning("No FHIR resources were generated. Review the notes above for remediation tips.")
+        st.markdown("</div>", unsafe_allow_html=True)
 
 copilot_agent = st.session_state.get("copilot_agent")
 if copilot_agent:

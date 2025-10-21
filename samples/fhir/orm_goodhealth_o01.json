@@ -1,0 +1,62 @@
+{
+  "resourceType": "Bundle",
+  "type": "collection",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-789101",
+        "name": [
+          {
+            "family": "Smith",
+            "given": [
+              "Jane",
+              "M"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "MedicationRequest",
+        "id": "mr-RX12345",
+        "status": "active",
+        "intent": "order",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://www.nlm.nih.gov/research/umls/rxnorm",
+              "code": "12345",
+              "display": "Amoxicillin 500 mg capsule"
+            }
+          ],
+          "text": "Amoxicillin 500 mg capsule"
+        },
+        "subject": {
+          "reference": "Patient/pat-789101"
+        },
+        "dosageInstruction": [
+          {
+            "text": "500 mg PO TID for 10 days",
+            "timing": {
+              "repeat": {
+                "frequency": 3,
+                "period": 1,
+                "periodUnit": "d"
+              }
+            },
+            "doseAndRate": [
+              {
+                "doseQuantity": {
+                  "value": 500,
+                  "unit": "mg"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  "resourceType": "Bundle",
+  "type": "collection",
+  "entry": [
+    {
+      "resource": {
+        "resourceType": "Patient",
+        "id": "pat-789101",
+        "identifier": [
+          {
+            "system": "urn:sys:GOODHEALTH",
+            "value": "789101"
+          }
+        ],
+        "name": [
+          {
+            "family": "Smith",
+            "given": [
+              "Jane",
+              "M"
+            ]
+          }
+        ],
+        "gender": "female",
+        "birthDate": "1988-12-20",
+        "address": [
+          {
+            "line": [
+              "111 Main St"
+            ],
+            "city": "Springfield",
+            "state": "IL",
+            "postalCode": "62704",
+            "country": "USA"
+          }
+        ]
+      }
+    },
+    {
+      "resource": {
+        "resourceType": "Encounter",
+        "id": "enc-A01-99999",
+        "status": "in-progress",
+        "class": {
+          "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
+          "code": "IMP",
+          "display": "inpatient encounter"
+        },
+        "subject": {
+          "reference": "Patient/pat-789101"
+        },
+        "period": {
+          "start": "2025-10-13T10:05:00Z"
+        },
+        "location": [
+          {
+            "location": {
+              "display": "ICU1 Bed10 GOODHEALTH"
+            }
+          }
+        ],
+        "type": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v2-0003",
+                "code": "A01",
+                "display": "Admit/visit notification"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
